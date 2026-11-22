@@ -844,9 +844,7 @@ class PhysicsWorld
     void RebaseCpuPoseDescendants(const GameObject &parent) const;
     void InvalidateBodyInterpolation(uint32_t bodyId) const;
     [[nodiscard]] PhysicsPosePublication PublishCpuPoses(PhysicsDomain &domain, float alpha) const;
-    [[nodiscard]] bool
-    ServicePresentationPoseReads(PhysicsDomain &domain, const std::vector<Rigidbody *> &bodies,
-                                 const std::shared_ptr<const JoltGpuScene::Publication> &publication);
+    [[nodiscard]] bool ServicePresentationPoseReads(PhysicsDomain &domain, const std::vector<Rigidbody *> &bodies);
     bool EnsureStaticBoundary(PhysicsDomain &domain, uint32_t bodyId);
     void QueueStaticFixedMoves(PhysicsDomain &domain);
     void SealStaticFixedMoves(PhysicsDomain &domain);
@@ -863,24 +861,11 @@ class PhysicsWorld
     void FlushAuthoring(PhysicsDomain &domain) const;
     void DrainGpuSource(PhysicsDomain &domain) const;
     void ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const;
-    [[nodiscard]] JoltGpuScene::Consumer PrepareRenderConsumer(PhysicsDomain &domain, bool numericalChange) const;
-    void RunGpuPublicationRead(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer,
-                               bool requireStaticGpuBoundaries = false) const;
     GpuPublicationReader &EnsureGpuPublicationReader();
     void DrainQueryGpuCapacity(PhysicsDomain &domain) const;
-    void AcceptQueryGpuPublication(PhysicsDomain &domain, bool refresh) const;
     void SealSpatialQuery(PhysicsDomain &domain) const;
     [[nodiscard]] const physics::inxphygpu::InxPhyGpuFixedPublication &
     ReadInxPhyGpuQueryPublication(PhysicsDomain &domain) const;
-    [[nodiscard]] std::shared_ptr<const JoltGpuScene::Publication> ReadGpuQueryPublication(PhysicsDomain &) const;
-    [[nodiscard]] std::shared_ptr<const JoltGpuScene::Publication>
-    ReadGpuSpatialQueryPublication(PhysicsDomain &) const;
-    void ObserveSpatialGpuQuery(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
-                                const JoltGpuScene::Consumer &) const;
-    [[nodiscard]] physics::inxphygpu::InxPhyGpuPreparedRayBatch
-    RunGpuRays(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
-               const std::vector<physics::inxphygpu::InxPhyGpuRay> &, const physics::inxphygpu::InxPhyGpuDeviceRays *,
-               const PhysicsDeviceRayOutputs *, const Collider *target = nullptr, uint32_t allHitCapacity = 0) const;
     PhysicsRigidbodyBatchSource ExportRaycastBatch(const std::vector<physics::inxphygpu::InxPhyGpuRay> &,
                                                    const physics::inxphygpu::InxPhyGpuDeviceRays *,
                                                    const PhysicsDeviceRayOutputs &) const;
@@ -893,14 +878,9 @@ class PhysicsWorld
     [[nodiscard]] bool RunGpuShapeCast(PhysicsDomain &, const physics::inxphygpu::InxPhyGpuQueryVolume &,
                                        const glm::vec3 &direction, float maximum, RaycastHit &,
                                        const BoxCollider *swept = nullptr) const;
-    [[nodiscard]] std::vector<Rigidbody *>
-    QueryRigidbodyCandidatesInBounds(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
-                                     const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layers,
-                                     bool triggers) const;
     [[nodiscard]] PhysicsRigidbodyStateBatch
     GatherRigidbodyStateRows(const std::vector<Rigidbody *> &, PhysicsStateFields, bool includeBoxes, bool triggers,
-                             const std::vector<PhysicsDeviceQueryOutput> &, bool sealed,
-                             const std::shared_ptr<const JoltGpuScene::Publication> &) const;
+                             const std::vector<PhysicsDeviceQueryOutput> &, bool sealed) const;
     [[nodiscard]] bool CanQueueRigidbodyCommand(uint32_t bodyId, const Rigidbody &) const;
     [[nodiscard]] Backend SelectBodyBackend(const PhysicsActorData &, const BodyRegistration *) const;
     [[nodiscard]] bool NeedsBodyBindingChange(const PhysicsActorData &) const;
@@ -923,15 +903,6 @@ class PhysicsWorld
     CollectCpuPoseReads(const std::vector<Transform *> &transforms, bool worldSpace) const;
     [[nodiscard]] PhysicsBodyMotionState ReadMotionState(PhysicsDomain &domain, uint32_t bodyId,
                                                          PhysicsStateFields fields, bool *sleeping = nullptr) const;
-    [[nodiscard]] JoltGpuControlWork
-    PrepareStateBatch(PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
-                      const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
-                      bool queryTriggers, const std::vector<PhysicsDeviceQueryOutput> &exports,
-                      PhysicsRigidbodyStateBatch &batch, PhysicsGpuMotionRead &hostMotion,
-                      PhysicsGpuMotionExport &motion, PhysicsGpuBoxExport &boxes, std::exception_ptr &requestError,
-                      bool deferExport = false) const;
-    [[nodiscard]] std::shared_ptr<const PhysicsShapeGeometry>
-    ResolveShapeGeometry(PhysicsDomain &domain, const JoltGpuScene::PublishedLeaf &leaf) const;
     void MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbodyStateBatch &batch,
                                const PhysicsGpuMotionRead &hostMotion, const PhysicsGpuBoxExport &boxes, bool numerical,
                                PhysicsStateFields cachedFields = static_cast<PhysicsStateFields>(0x1ff)) const;
@@ -952,7 +923,6 @@ class PhysicsWorld
     std::unordered_map<uint64_t, PhysicsDomain *> m_jointDomains;
     std::unordered_set<PhysicsDomain *> m_domains;
     mutable std::unique_ptr<physics::inxphygpu::InxPhyGpuPairQuery> m_gpuPairQuery;
-    mutable std::unique_ptr<physics::inxphygpu::InxPhyGpuParticleExport> m_gpuParticleExport;
 };
 
 } // namespace infernux

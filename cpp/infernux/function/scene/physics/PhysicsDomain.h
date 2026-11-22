@@ -25,7 +25,6 @@ class RuntimeWorld;
 class JoltCpuScene;
 class JoltCpuControl;
 class PhysicsConstraintOwner;
-struct PhysicsSceneRayPlan;
 struct PhysicsGpuPublicationRequest;
 
 struct PhysicsSceneJointAuthor
@@ -193,7 +192,6 @@ struct PhysicsDomain final
     RenderState rendering;
     struct PresentationPoseReads
     {
-        std::shared_ptr<const JoltGpuScene::Publication> publication;
         std::shared_ptr<const physics::inxphygpu::InxPhyGpuFixedPublication> nativePublication;
         uint64_t generation = 0;
         PhysicsGpuMotionRead read;
@@ -204,6 +202,5 @@ struct PhysicsDomain final
     uint64_t presentationPoseReadGeneration = 0;
     // A collision graph can consume static GPU boundaries without a Rigidbody.
     std::weak_ptr<const void> particleCollisionConsumer;
-    std::unique_ptr<PhysicsSceneRayPlan> sceneRays;
 };
 } // namespace infernux

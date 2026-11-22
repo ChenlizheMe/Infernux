@@ -57,22 +57,6 @@
 
 namespace infernux
 {
-struct PhysicsSceneRayPlan
-{
-    std::shared_ptr<const JoltGpuScene::PublicationDirectory> directory;
-    uint32_t bodyBase = 0, bodyCount = 0;
-    physics::inxphygpu::InxPhyGpuPublishedRayQuery query;
-    std::vector<RaycastHit> surfaces; // Geometry rows, resolved only when a read completes.
-    std::map<std::pair<uint64_t, uint64_t>, std::pair<uint32_t, uint32_t>> colliderGeometry;
-    std::optional<std::vector<physics::inxphygpu::InxPhyGpuParticleSurface>> particleSurfaces;
-
-    [[nodiscard]] bool Matches(const JoltGpuScene::Publication &publication) const
-    {
-        return directory == publication.directory && bodyBase == publication.bodyBase &&
-               bodyCount == publication.bodyCount;
-    }
-};
-
 namespace
 {
 using namespace JPH::GPU;
@@ -101,34 +85,6 @@ Float4 Vector(const glm::vec3 &v)
 glm::vec3 Vector(const Float4 &v)
 {
     return {v.x, v.y, v.z};
-}
-
-PhysicsGpuPoseSource ScenePoseSource(const JoltGpuScene::Publication &p)
-{
-    return {p.bodyStates, 0, p.bodyCount, sizeof(JPH::GPU::BodyState)};
-}
-
-PhysicsGpuBodyPoseBinding ScenePoseBinding(const JoltGpuScene::Publication &p,
-                                           const JoltGpuScene::PublishedActor &actor)
-{
-    const auto &center = actor.rootCenterOfMass;
-    return {actor.bodyId, actor.slot - p.bodyBase, {center.x, center.y, center.z}};
-}
-
-PhysicsGpuMotionBinding SceneMotionBinding(const JoltGpuScene::Publication &publication,
-                                           const JoltGpuScene::PublishedActor &actor)
-{
-    PhysicsGpuMotionBinding result{ScenePoseBinding(publication, actor), actor.shapeRevision};
-    if (actor.acceptedMotionType == JPH::GPU::MotionDynamic) {
-        const auto &model = actor.physicalModel;
-        result.inverseMass = model.mass.x;
-        result.inverseInertia = Vector(model.invInertiaDiagonal);
-        result.inertiaFrame = {model.inertiaRotation.w, model.inertiaRotation.x, model.inertiaRotation.y,
-                               model.inertiaRotation.z};
-        result.frozenTranslation = static_cast<uint32_t>(model.mass.y);
-        result.frozenRotation = static_cast<uint32_t>(model.mass.z);
-    }
-    return result;
 }
 
 bool IsMotionExport(const PhysicsDeviceQueryOutput &binding)
@@ -445,108 +401,6 @@ ShaderCodeTarget PhysicsShaderTarget(const rhi::ComputeHost &host)
     }
 }
 
-std::pair<std::unique_ptr<PhysicsSceneRayPlan>, std::vector<rhi::ComputeBufferUpdate>>
-BuildSceneRayPlan(rhi::ComputeHost &host, const JoltGpuScene::Publication &publication, uint32_t capacity,
-                  bool particles = false)
-{
-    using namespace physics::inxphygpu;
-    auto plan = std::make_unique<PhysicsSceneRayPlan>();
-    plan->directory = publication.directory;
-    plan->bodyBase = publication.bodyBase;
-    plan->bodyCount = publication.bodyCount;
-    std::vector<InxPhyGpuSceneActor> actors;
-    std::vector<std::vector<RaycastHit>> surfaces;
-    std::vector<uint32_t> slots;
-    std::vector<uint32_t> boundsBodyRows;
-    const auto &directory = *publication.directory;
-    for (uint32_t row = 0; row < publication.bodyCount; ++row) {
-        const auto slot = publication.bodyBase + row;
-        if (slot >= directory.actors.size() || !directory.residentBodies[slot])
-            continue;
-        const auto &actor = *directory.actors[slot];
-        if (actor.leaves.empty())
-            continue;
-        auto &source = actors.emplace_back();
-        source.shape = actor.authoredShape;
-        source.kinematic = actor.acceptedMotionType != MotionStatic;
-        source.objectId = actor.owner.gameObjectId;
-        auto &members = surfaces.emplace_back();
-        slots.push_back(row);
-        if (actor.rigidbodyComponentId)
-            boundsBodyRows.push_back(row);
-        for (const auto &leaf : actor.leaves) {
-            const auto index = leaf.memberIndex;
-            if (members.size() <= index) {
-                members.resize(index + 1);
-                source.colliders.resize(index + 1);
-            }
-            source.colliders[index] = {leaf.colliderId,
-                                       leaf.colliderGeneration,
-                                       leaf.layer,
-                                       UINT32_MAX,
-                                       0.0f,
-                                       leaf.sensor,
-                                       leaf.bounciness,
-                                       static_cast<PhysicsMaterialCombine>(leaf.frictionCombine),
-                                       static_cast<PhysicsMaterialCombine>(leaf.bounceCombine)};
-            source.colliders[index].friction = leaf.friction;
-            auto &surface = members[index];
-            surface.target = leaf.surfaceTarget;
-            surface.bodyId = actor.bodyId;
-            surface.gameObjectId = leaf.surfaceGameObjectId;
-            surface.colliderId = leaf.colliderId;
-        }
-    }
-    std::sort(boundsBodyRows.begin(), boundsBodyRows.end(), [&](uint32_t a, uint32_t b) {
-        return directory.actors[publication.bodyBase + a]->rigidbodyComponentId <
-               directory.actors[publication.bodyBase + b]->rigidbodyComponentId;
-    });
-    const auto model = BuildInxPhyGpuSceneModel(actors);
-    std::vector<uint32_t> poseRows(model.model.bodies.size()), authorRows(model.model.bodies.size());
-    for (size_t i = 0; i < model.model.bodyRows.size(); ++i) {
-        const auto row = model.model.bodyRows[i];
-        poseRows[row] = slots[i];
-        authorRows[row] = static_cast<uint32_t>(i);
-    }
-    plan->surfaces.reserve(model.geometries.size());
-    if (particles)
-        plan->particleSurfaces.emplace().reserve(model.geometries.size());
-    for (size_t row = 0; row < model.geometries.size(); ++row) {
-        const auto body = model.model.geometries[row].indices[0];
-        const auto &geometry = model.geometries[row];
-        plan->surfaces.push_back(surfaces[authorRows[body]][geometry.surface]);
-        if (particles) {
-            const auto &surface = plan->surfaces.back();
-            const auto &actor = *directory.actors[publication.bodyBase + poseRows[body]];
-            const auto &material = geometry.collider;
-            const auto &bound = model.collision.bounds[row];
-            plan->particleSurfaces->push_back(
-                {{material.componentId, material.generation, geometry.subShape, 0,
-                  reinterpret_cast<uintptr_t>(actor.authoredShape.GetPtr())},
-                 {{static_cast<uint32_t>(row), NoModelIndex, static_cast<uint32_t>(material.generation),
-                   static_cast<uint32_t>(material.generation >> 32u)},
-                  {static_cast<uint32_t>(material.componentId), static_cast<uint32_t>(material.componentId >> 32u),
-                   static_cast<uint32_t>(surface.gameObjectId), static_cast<uint32_t>(surface.gameObjectId >> 32u)},
-                  {1u << material.layer, static_cast<uint32_t>(material.trigger), 0u, 0u},
-                  bound.halfExtent,
-                  bound.center,
-                  {material.friction, material.bounciness, static_cast<float>(material.frictionCombine),
-                   static_cast<float>(material.bounceCombine)}},
-                 surface.target,
-                 actor.acceptedMotionType == MotionStatic});
-        }
-        // CollectPhysicsShapeLeaves orders each body's leaves by collider member.
-        const auto key = std::pair{geometry.collider.componentId, geometry.collider.generation};
-        const auto first = static_cast<uint32_t>(row);
-        auto range = plan->colliderGeometry.try_emplace(key, first, first + 1).first;
-        range->second.second = first + 1;
-    }
-    auto prepared = InxPhyGpuPublishedRayQuery::Build(host, PhysicsShaderTarget(host), model.model, model.collision,
-                                                      capacity, publication.bodyCount, poseRows, boundsBodyRows);
-    plan->query = std::move(prepared.query);
-    return {std::move(plan), std::move(prepared.initialize)};
-}
-
 physics::inxphygpu::ModelWords SceneRayFilter(uint32_t layers, bool triggers)
 {
     using namespace physics::inxphygpu;
@@ -572,25 +426,6 @@ std::vector<physics::inxphygpu::InxPhyGpuRay> PackSceneRays(const float *origins
     return rays;
 }
 
-bool DecodeSceneRayHit(const PhysicsSceneRayPlan &plan, const physics::inxphygpu::InxPhyGpuRay &ray,
-                       const physics::inxphygpu::InxPhyGpuRayHit &record, RaycastHit &hit)
-{
-    const auto &[normalDistance, identity] = record;
-    if (identity[0] == physics::inxphygpu::NoModelIndex) {
-        hit = {};
-        return false;
-    }
-    hit = plan.surfaces.at(identity[0]);
-    hit.subShapeId = identity[2];
-    hit.triangleIndex = identity[3];
-    hit.distance = normalDistance[3];
-    hit.normal = {normalDistance[0], normalDistance[1], normalDistance[2]};
-    hit.point = glm::vec3(ray.originLimit[0], ray.originLimit[1], ray.originLimit[2]) +
-                glm::vec3(ray.direction[0], ray.direction[1], ray.direction[2]) * hit.distance;
-    hit.collider = hit.target.GetCollider();
-    hit.gameObject = hit.target.GetGameObject();
-    return true;
-}
 Rigidbody &KinematicBody(const PhysicsActorData &actor)
 {
     auto *body = actor.rigidbody;
@@ -1136,7 +971,6 @@ void PhysicsWorld::RetireGpuPartition(PhysicsDomain &domain)
     domain.AcceptGpuJointEdits();
     domain.gpuTargetAuthors.reset();
     domain.lastPublication.reset();
-    domain.sceneRays.reset();
     domain.gpuContacts.Close();
     domain.queuedColliderPairs.reset();
     if (auto pose = std::exchange(domain.presentationPoseReads, {}))
@@ -1183,7 +1017,6 @@ void PhysicsWorld::Shutdown()
         domain->cpuPublication = {};
         domain->cpuFixedAdmitted = false;
         domain->lastPublication.reset();
-        domain->sceneRays.reset();
         domain->queuedColliderPairs.reset();
         domain->requestedMotion.clear();
     }
@@ -1203,7 +1036,6 @@ void PhysicsWorld::Shutdown()
     m_gpuContactReports.reset();
     m_gpuRenderProgram.reset();
     m_gpuPairQuery.reset();
-    m_gpuParticleExport.reset();
     m_gpuJoints.reset();
     m_gpuPublicationReader.reset();
     m_cpuServices.reset();
@@ -1598,34 +1430,6 @@ std::shared_ptr<PhysicsGpuRenderJob> PhysicsWorld::CaptureGpuRenderJob(PhysicsDo
     job->snapshot = std::move(snapshot);
     job->keys = keys;
     return job;
-}
-
-JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain, bool numericalChange) const
-{
-    auto job = CaptureGpuRenderJob(domain, numericalChange);
-    domain.rendering.pending = job;
-    if (!job)
-        return {};
-    return [this, &domain, job = std::move(job)](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        auto &state = domain.rendering;
-        const PhysicsGpuRenderBindings::Source source{
-            ScenePoseSource(*publication),
-            [&](PhysicsActorHandle handle, uint32_t bodyId) -> std::optional<PhysicsGpuBodyPoseBinding> {
-                const auto slot = publication->directory->FindBodySlot(bodyId);
-                if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
-                    return std::nullopt;
-                const auto &actor = publication->directory->actors[slot];
-                if (!actor || actor->actor != handle)
-                    return std::nullopt;
-                return ScenePoseBinding(*publication, *actor);
-            }};
-        job->output = state.bindings.PrepareExport(job->snapshot, source, *m_gpuRenderProgram);
-        job->receipt = publication;
-        return ContinueJoltGpuControlWork(job->output->Packet(), [job] {
-            job->output->Seal();
-            return JoltGpuControlWork{};
-        });
-    };
 }
 
 PhysicsGpuRenderPoses &PhysicsWorld::EnsureGpuRenderPoses()
@@ -2148,10 +1952,9 @@ bool PhysicsWorld::BeginGpuControl(PhysicsDomain &domain, bool numericalChange, 
     numericalChange = numericalChange || m_gpuScene->HasPendingControl(domain.owner);
     AdmissionScope admission(*m_gpuScene, domain.owner);
     FrameWorkOwner::Scope preparation(*m_gpuWork);
-    auto rendering = PrepareRenderConsumer(domain, numericalChange);
-    if (!numericalChange && !rendering && !requirePublication)
+    if (!numericalChange && !requirePublication)
         return true;
-    if (!m_gpuScene->TryBeginControl(domain.owner, domain.owner.simulation.simulationEpoch, std::move(rendering)))
+    if (!m_gpuScene->TryBeginControl(domain.owner, domain.owner.simulation.simulationEpoch, {}))
         return false;
     domain.AcceptGpuJointEdits();
     domain.gpuTargetAuthors.reset();
@@ -2457,77 +2260,6 @@ void PhysicsWorld::DrainQueryGpuCapacity(PhysicsDomain &domain) const
     }
 }
 
-void PhysicsWorld::AcceptQueryGpuPublication(PhysicsDomain &domain, bool refresh) const
-{
-    QueueColliderPairs(domain);
-    const bool pending = m_gpuScene->HasPendingControl(domain.owner);
-    if (refresh || pending || !m_gpuScene->IsCurrentPublication(domain.owner, m_gpuScene->GetPublished(domain.owner))) {
-        while (!BeginGpuControl(domain, pending, true))
-            DrainGpuSource(domain);
-        if (!AdvanceGpuControl(domain, true))
-            throw std::runtime_error("GPU query control did not complete");
-    }
-}
-
-void PhysicsWorld::RunGpuPublicationRead(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer,
-                                         bool requireStaticGpuBoundaries) const
-{
-    RequireOwnerThread();
-    const WorldExecutionScope ownerScope(&domain.owner);
-    RequireHealthyStep(domain);
-    if (domain.synchronousRead)
-        throw std::logic_error("Physics query cannot reenter its synchronous source");
-    FlagScope reading(domain.synchronousRead);
-    const auto observe = [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        JoltGpuControlWork prepared;
-        {
-            FrameWorkOwner::Scope preparation(*m_gpuWork);
-            prepared = consumer(publication);
-        }
-        RunPreparedWork(domain, std::move(prepared));
-    };
-    // Completing an admitted solver can establish the Fixed publication hold.
-    if (!IsFixedPublicationHeld(domain))
-        const_cast<PhysicsWorld *>(this)->CompleteDomainStep(domain);
-    if (IsFixedPublicationHeld(domain)) {
-        if (!consumer)
-            return;
-        const auto publication = domain.gpuContacts.GetPublication();
-        if (!publication || !publication->isFixedStep || publication->worldId != domain.owner.id ||
-            publication->simulationEpoch != domain.stepEpoch || publication->fixedStepIndex != domain.stepIndex)
-            throw std::logic_error("Physics query has no matching completed Fixed publication");
-        observe(publication);
-        return;
-    }
-    RequireGpu(domain);
-    try {
-        {
-            FrameWorkOwner::Scope preparation(*m_gpuWork);
-            FlushAuthoring(domain);
-        }
-        // Device collision readers consume collider-only actors even when no
-        // Rigidbody step runs. An empty pending set stages nothing; capacity
-        // deferral retains the existing control cursor and accepted receipts.
-        while (requireStaticGpuBoundaries) {
-            {
-                FrameWorkOwner::Scope preparation(*m_gpuWork);
-                if (const_cast<PhysicsWorld *>(this)->EnsureStaticBoundaries(domain))
-                    break;
-            }
-            if (!domain.waitingForSlot)
-                throw std::runtime_error("GPU collision query is awaiting static collider acceptance");
-            DrainQueryGpuCapacity(domain);
-        }
-        DrainQueryGpuCapacity(domain);
-        AcceptQueryGpuPublication(domain, HasDomainControl(domain));
-        if (consumer)
-            observe(ReadGpuQueryPublication(domain));
-    } catch (...) {
-        const_cast<PhysicsWorld *>(this)->FailStep(domain);
-        throw;
-    }
-}
-
 void PhysicsWorld::SealSpatialQuery(PhysicsDomain &domain) const
 {
     RequireOwnerThread();
@@ -2541,37 +2273,10 @@ void PhysicsWorld::SealSpatialQuery(PhysicsDomain &domain) const
     if (IsFixedPublicationHeld(domain))
         return;
 
-    {
-        std::optional<FrameWorkOwner::Scope> preparation;
-        if (domain.gpuRegistered)
-            preparation.emplace(*m_gpuWork);
-        FlushAuthoring(domain);
-    }
-    while (!const_cast<PhysicsWorld *>(this)->EnsureStaticBoundaries(domain)) {
-        if (!domain.waitingForSlot)
-            throw std::runtime_error("Physics query has static collider geometry awaiting acceptance");
-        DrainQueryGpuCapacity(domain);
-    }
-    if (domain.gpuRegistered) {
-        DrainQueryGpuCapacity(domain);
-        AcceptQueryGpuPublication(domain, false);
-    }
-
+    FlushAuthoring(domain);
+    const_cast<PhysicsWorld *>(this)->EnsureStaticBoundaries(domain);
     if (HasCpuControl(domain))
         ApplyCpuControl(domain);
-}
-
-std::shared_ptr<const JoltGpuScene::Publication> PhysicsWorld::ReadGpuQueryPublication(PhysicsDomain &domain) const
-{
-    if (!domain.gpuRegistered)
-        return {};
-    const bool held = IsFixedPublicationHeld(domain);
-    auto publication = held ? domain.gpuContacts.GetPublication() : m_gpuScene->GetPublished(domain.owner);
-    if (!publication || publication->worldId != domain.owner.id ||
-        publication->simulationEpoch != domain.owner.simulation.simulationEpoch ||
-        (held && (!publication->isFixedStep || publication->fixedStepIndex != domain.stepIndex)))
-        throw std::logic_error("Physics query has no matching completed GPU publication");
-    return publication;
 }
 
 const physics::inxphygpu::InxPhyGpuFixedPublication &
@@ -2596,37 +2301,6 @@ PhysicsWorld::ReadInxPhyGpuQueryPublication(PhysicsDomain &domain) const
     return publication;
 }
 
-std::shared_ptr<const JoltGpuScene::Publication>
-PhysicsWorld::ReadGpuSpatialQueryPublication(PhysicsDomain &domain) const
-{
-    auto publication = ReadGpuQueryPublication(domain);
-    // Test the accepted per-world layout only after sealing query sources and
-    // validating their World/epoch. GPU participants and shapeless bodies can
-    // publish numerical state without any collision leaves. Keep their source
-    // available to state gathers, but do not run an empty spatial query on it.
-    return publication && publication->leafCount ? publication : nullptr;
-}
-
-void PhysicsWorld::ObserveSpatialGpuQuery(PhysicsDomain &domain,
-                                          const std::shared_ptr<const JoltGpuScene::Publication> &publication,
-                                          const JoltGpuScene::Consumer &consumer) const
-{
-    RequireOwnerThread();
-    RequireHealthyStep(domain);
-    if (!publication)
-        throw std::logic_error("Physics observation requires an accepted GPU publication");
-    if (domain.synchronousRead)
-        throw std::logic_error("Physics query cannot reenter its synchronous source");
-    FlagScope reading(domain.synchronousRead);
-    const WorldExecutionScope ownerScope(&domain.owner);
-    JoltGpuControlWork prepared;
-    {
-        FrameWorkOwner::Scope preparation(*m_gpuWork);
-        prepared = consumer(publication);
-    }
-    RunPreparedWork(domain, std::move(prepared));
-}
-
 std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, const JoltCpuQueries::Shape &shape,
                                                      uint32_t layers, bool triggers) const
 {
@@ -2644,30 +2318,7 @@ std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, cons
         SealSpatialQuery(domain);
         if (domain.cpuScene)
             return JoltCpuQueries(*domain.cpuScene).Overlap(shape, {layers, triggers});
-        const auto gpu = ReadGpuSpatialQueryPublication(domain);
-        if (!gpu || !layers)
-            return {};
-        std::unique_ptr<PhysicsSceneRayPlan> replacement;
-        auto *plan = domain.sceneRays.get();
-        std::shared_ptr<rhi::PreparedComputeBatch> result;
-        ObserveSpatialGpuQuery(domain, gpu, [&](const auto &accepted) {
-            std::vector<rhi::ComputeBufferUpdate> uploads;
-            if (!plan || !plan->Matches(*accepted)) {
-                auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, plan ? plan->query.Capacity() : 64);
-                replacement = std::move(prepared.first);
-                uploads = std::move(prepared.second);
-                plan = replacement.get();
-            }
-            result = plan->query.PrepareOverlap(*m_gpuHost, ScenePoseSource(*accepted), request, std::move(uploads));
-            return JoltGpuControlWork{result};
-        });
-        if (replacement)
-            domain.sceneRays = std::move(replacement);
-        FrameWorkOwner::Scope materialize(*m_gpuWork);
-        for (const auto row :
-             physics::inxphygpu::ReadInxPhyGpuSelection(*result, static_cast<uint32_t>(plan->surfaces.size())))
-            if (auto *collider = plan->surfaces[row].target.GetCollider())
-                colliders.push_back(collider);
+        return {};
     }
     std::sort(colliders.begin(), colliders.end(),
               [](const auto *a, const auto *b) { return a->GetComponentID() < b->GetComponentID(); });
@@ -2683,8 +2334,9 @@ bool PhysicsWorld::QueryClosestCast(PhysicsDomain &domain, const JoltCpuQueries:
     ValidateRayInput({volume.pose.position[0], volume.pose.position[1], volume.pose.position[2]}, direction, maximum);
     if (!domain.UsesGpu()) {
         SealSpatialQuery(domain);
-        if (domain.cpuScene)
-            return JoltCpuQueries(*domain.cpuScene).Cast(shape, direction, maximum, hit, {layers, triggers});
+        hit = {};
+        return domain.cpuScene &&
+               JoltCpuQueries(*domain.cpuScene).Cast(shape, direction, maximum, hit, {layers, triggers});
     }
     return RunGpuShapeCast(domain, volume, direction, maximum, hit);
 }
@@ -2700,85 +2352,22 @@ bool PhysicsWorld::RunGpuShapeCast(PhysicsDomain &domain, const physics::inxphyg
     const glm::dvec3 delta(direction);
     const auto unit = glm::vec3(delta / std::hypot(delta.x, delta.y, delta.z));
     const ModelVector motion{unit.x, unit.y, unit.z, swept ? 1.0e-3f : 0.0f};
-    if (domain.UsesGpu()) {
-        const auto &publication = ReadInxPhyGpuQueryPublication(domain);
-        InxPhyGpuSceneVolumeRead query;
-        if (swept) {
-            const InxPhyGpuSceneSweepSource source{ColliderBodyIdentity(*swept), swept->GetComponentID(),
-                                                   swept->GetLifetimeGeneration(), swept->GetGameObject()->GetID()};
-            query = domain.nativeRuntime->PrepareShapeCast(publication, 0, volume, motion, maximum, &source,
-                                                           *CaptureColliderPairs(domain));
-        } else {
-            query = domain.nativeRuntime->PrepareShapeCast(publication, 0, volume, motion, maximum, nullptr, {});
-        }
-        if (!query.packet)
-            return false;
-        RunPreparedWork(domain, query.packet);
-        FrameWorkOwner::Scope materialize(*m_gpuWork);
-        hit = query.ReadCast();
-        return hit.bodyId != UINT32_MAX;
+    const auto &publication = ReadInxPhyGpuQueryPublication(domain);
+    InxPhyGpuSceneVolumeRead query;
+    if (swept) {
+        const InxPhyGpuSceneSweepSource source{ColliderBodyIdentity(*swept), swept->GetComponentID(),
+                                               swept->GetLifetimeGeneration(), swept->GetGameObject()->GetID()};
+        query = domain.nativeRuntime->PrepareShapeCast(publication, 0, volume, motion, maximum, &source,
+                                                       *CaptureColliderPairs(domain));
+    } else {
+        query = domain.nativeRuntime->PrepareShapeCast(publication, 0, volume, motion, maximum, nullptr, {});
     }
-    const auto gpu = ReadGpuSpatialQueryPublication(domain);
-    if (!gpu)
+    if (!query.packet)
         return false;
-    std::unique_ptr<PhysicsSceneRayPlan> replacement;
-    auto *plan = domain.sceneRays.get();
-    std::shared_ptr<rhi::PreparedComputeBatch> result;
-    std::exception_ptr requestError;
-    ObserveSpatialGpuQuery(domain, gpu, [&](const auto &accepted) {
-        return PrepareJoltGpuQueryWork(
-            [&]() -> JoltGpuControlWork {
-                std::vector<rhi::ComputeBufferUpdate> uploads;
-                const auto target = PhysicsShaderTarget(*m_gpuHost);
-                if (!plan || !plan->Matches(*accepted)) {
-                    auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, plan ? plan->query.Capacity() : 64);
-                    replacement = std::move(prepared.first);
-                    uploads = std::move(prepared.second);
-                    plan = replacement.get();
-                }
-                std::vector<ModelWords> exclusions;
-                if (swept) {
-                    const auto self = std::pair{swept->GetComponentID(), swept->GetLifetimeGeneration()};
-                    const auto ownRange = plan->colliderGeometry.find(self);
-                    const auto ownBody = ownRange == plan->colliderGeometry.end()
-                                             ? UINT32_MAX
-                                             : plan->surfaces[ownRange->second.first].bodyId;
-                    const auto object = swept->GetGameObject()->GetID();
-                    const auto pairs = CaptureColliderPairs(domain);
-                    exclusions.resize((plan->surfaces.size() + 127) / 128);
-                    for (const auto &[key, range] : plan->colliderGeometry) {
-                        const auto &surface = plan->surfaces[range.first];
-                        const bool ownsBody = ownBody != UINT32_MAX && surface.bodyId == ownBody;
-                        const bool sameObject = surface.gameObjectId == object;
-                        const auto [first, second] = std::minmax(self, key);
-                        const PhysicsColliderPair pair{first.first, first.second, second.first, second.second};
-                        const bool ignored = std::binary_search(pairs->begin(), pairs->end(), pair);
-                        if (ownsBody || sameObject || ignored)
-                            for (uint32_t row = range.first; row < range.second; ++row)
-                                exclusions[row / 128][(row / 32) % 4] |= uint32_t{1} << (row % 32);
-                    }
-                }
-                result = plan->query.PrepareShapeCast(
-                    *m_gpuHost, target, ScenePoseSource(*accepted), volume, motion, maximum, exclusions,
-                    [plan](uint32_t row) { return plan->surfaces[row].bodyId; }, std::move(uploads));
-                return {result};
-            },
-            requestError);
-    });
-    if (requestError)
-        std::rethrow_exception(requestError);
-    if (replacement)
-        domain.sceneRays = std::move(replacement);
+    RunPreparedWork(domain, query.packet);
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    InxPhyGpuShapeCastHit record;
-    result->Readback(0)->ReadInto(&record, sizeof(record));
-    if (record.point[3] != 0.0f)
-        throw std::runtime_error("inxphygpu shape cast did not converge");
-    const InxPhyGpuRay path{volume.pose.position, motion, {}};
-    if (!DecodeSceneRayHit(*plan, path, record.surface, hit))
-        return false;
-    hit.point = {record.point[0], record.point[1], record.point[2]};
-    return true;
+    hit = query.ReadCast();
+    return hit.bodyId != UINT32_MAX;
 }
 
 bool PhysicsWorld::CanStageNewGpuBody(PhysicsDomain &domain, size_t count)
@@ -3203,16 +2792,7 @@ bool PhysicsWorld::IsBodyInBroadphase(uint32_t id) const
         RunCpuControl(domain);
         return domain.cpuScene->IsBodyInBroadphase(id);
     }
-    if (!entry.HasGpuBody())
-        return false;
-    RunGpuPublicationRead(domain, {});
-    const auto publication =
-        IsFixedPublicationHeld(domain) ? domain.gpuContacts.GetPublication() : m_gpuScene->GetPublished(domain.owner);
-    if (!publication)
-        return false;
-    const auto &directory = *publication->directory;
-    const auto found = directory.bodySlots.find(id);
-    return found != directory.bodySlots.end() && directory.residentBodies[found->second];
+    return false;
 }
 void PhysicsWorld::SetBodyMotionType(uint32_t id, int type)
 {
@@ -3453,62 +3033,6 @@ JoltGpuControlWork PrepareStateBatchOutput(rhi::ComputeHost &host, const Physics
 }
 } // namespace
 
-JoltGpuControlWork PhysicsWorld::PrepareStateBatch(PhysicsDomain &domain,
-                                                   const std::shared_ptr<const JoltGpuScene::Publication> &publication,
-                                                   const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields,
-                                                   bool includeBoxes, bool triggers,
-                                                   const std::vector<PhysicsDeviceQueryOutput> &exports,
-                                                   PhysicsRigidbodyStateBatch &batch, PhysicsGpuMotionRead &hostMotion,
-                                                   PhysicsGpuMotionExport &motion, PhysicsGpuBoxExport &boxes,
-                                                   std::exception_ptr &requestError, bool deferExport) const
-{
-    return PrepareJoltGpuQueryWork(
-        [&]() -> JoltGpuControlWork {
-            batch.bodies = bodies;
-            batch.states.resize(bodies.size());
-            const bool host = exports.empty();
-            const bool numericMotion =
-                host ? (static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) != 0
-                     : std::any_of(exports.begin(), exports.end(), IsMotionExport);
-            std::vector<PhysicsGpuMotionBinding> selected;
-            selected.reserve(numericMotion || (host && includeBoxes) ? bodies.size() : 0);
-            for (size_t index = 0; index < bodies.size(); ++index) {
-                auto *body = bodies[index];
-                if (!body || !body->IsEnabled() || body->IsDestroyed() || !body->GetGameObject())
-                    throw JoltGpuQueryRequestError("Physics batch requires live enabled Rigidbody components");
-                const auto slot = publication->directory->FindBodySlot(body->GetBodyId());
-                if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
-                    throw JoltGpuQueryRequestError("Physics batch requires accepted body identities");
-                const auto &identity = *publication->directory->actors[slot];
-                if (identity.rigidbodyComponentId != body->GetComponentID() ||
-                    identity.rigidbody != body->GetECSHandle())
-                    throw JoltGpuQueryRequestError("Physics batch Rigidbody differs from its retained publication");
-                batch.states[index].bodyId = identity.bodyId;
-                batch.states[index].shapeRevision = identity.shapeRevision;
-                if (numericMotion || (host && includeBoxes))
-                    selected.push_back(SceneMotionBinding(*publication, identity));
-                if (includeBoxes && publication->directory->residentBodies[slot])
-                    for (const auto &leaf : identity.leaves)
-                        if (leaf.shapeType == ShapeBox && (triggers || !leaf.sensor))
-                            boxes.boxes.push_back(
-                                {slot - publication->bodyBase,
-                                 static_cast<uint32_t>(index),
-                                 {leaf.centerOfMassOffset, leaf.localRotation, Vector(leaf.dimensions), leaf.friction,
-                                  leaf.bounciness, leaf.memberIndex, leaf.sensor}});
-            }
-            const uint64_t generation = domain.queryGeneration.load(std::memory_order_acquire) +
-                                        static_cast<uint64_t>(domain.controlNumericalChange);
-            batch.sources = {
-                {publication->worldId, publication->simulationEpoch, publication->fixedStepIndex, generation}};
-            batch.sourceForBody.assign(bodies.size(), 0u);
-            boxes.poses = ScenePoseSource(*publication);
-            motion = {boxes.poses, std::move(selected)};
-            return PrepareStateBatchOutput(*m_gpuHost, m_gpuRenderProgram.get(), fields, exports, batch, hostMotion,
-                                           motion, boxes, deferExport);
-        },
-        requestError);
-}
-
 void PhysicsWorld::MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbodyStateBatch &batch,
                                          const PhysicsGpuMotionRead &hostMotion, const PhysicsGpuBoxExport &boxes,
                                          bool numerical, PhysicsStateFields cachedFields) const
@@ -3543,14 +3067,14 @@ PhysicsWorld::GatherRigidbodyStates(const std::vector<Rigidbody *> &bodies, Phys
                                     bool includeBoxes, bool triggers,
                                     const std::vector<PhysicsDeviceQueryOutput> &exports) const
 {
-    return GatherRigidbodyStateRows(bodies, fields, includeBoxes, triggers, exports, false, {});
+    return GatherRigidbodyStateRows(bodies, fields, includeBoxes, triggers, exports, false);
 }
 
-PhysicsRigidbodyStateBatch
-PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields,
-                                       bool includeBoxes, bool triggers,
-                                       const std::vector<PhysicsDeviceQueryOutput> &exports, bool sealed,
-                                       const std::shared_ptr<const JoltGpuScene::Publication> &gpu) const
+PhysicsRigidbodyStateBatch PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies,
+                                                                  PhysicsStateFields fields, bool includeBoxes,
+                                                                  bool triggers,
+                                                                  const std::vector<PhysicsDeviceQueryOutput> &exports,
+                                                                  bool sealed) const
 {
     RequireOwnerThread();
     if (bodies.empty())
@@ -3634,7 +3158,7 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
                 group.batch.sourceForBody.resize(bodies.size());
                 return std::move(group.batch);
             }
-        } else if (domain.UsesGpu()) {
+        } else {
             const auto &publication = sealed ? *domain.nativeFixedPublication : ReadInxPhyGpuQueryPublication(domain);
             const auto &identity = publication.worlds.front().identity;
             const auto generation = domain.queryGeneration.load(std::memory_order_acquire);
@@ -3665,26 +3189,6 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
             if (direct)
                 return std::move(rows);
             batch.sources.push_back(rows.sources.front());
-        } else {
-            std::exception_ptr error;
-            const auto prepare = [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-                return PrepareStateBatch(domain, publication, group.bodies, fields, includeBoxes, triggers, exports,
-                                         group.batch, group.hostMotion, group.motion, group.gpuBoxes, error,
-                                         !direct && !exports.empty());
-            };
-            if (sealed) {
-                ObserveSpatialGpuQuery(domain, gpu, prepare);
-            } else {
-                RunGpuPublicationRead(domain, prepare);
-            }
-            if (error)
-                std::rethrow_exception(error);
-            MaterializeStateBatch(domain, group.batch, group.hostMotion, group.gpuBoxes, exports.empty(), fields);
-            // One world's query rows already follow caller order. The device can export
-            // the entire batch, including the owning body of each compound shape.
-            if (direct)
-                return std::move(group.batch);
-            batch.sources.push_back(group.batch.sources.front());
         }
         for (size_t local = 0; local < group.indices.size(); ++local) {
             const auto row = group.indices[local];
@@ -3761,16 +3265,8 @@ PhysicsWorld::GatherRigidbodyStatesInBounds(const glm::vec3 &minimum, const glm:
                                             bool triggers, PhysicsStateFields fields, bool includeBoxes,
                                             const std::vector<PhysicsDeviceQueryOutput> &exports) const
 {
-    auto &domain = CurrentDomain();
-    if (domain.UsesGpu()) {
-        const auto bodies = QueryRigidbodiesInBounds(minimum, maximum, layers, triggers);
-        return GatherRigidbodyStateRows(bodies, fields, includeBoxes, triggers, exports, true, {});
-    }
-    SealSpatialQuery(domain);
-    const auto gpu = ReadGpuSpatialQueryPublication(domain);
-
-    const auto bodies = QueryRigidbodyCandidatesInBounds(domain, gpu, minimum, maximum, layers, triggers);
-    return GatherRigidbodyStateRows(bodies, fields, includeBoxes, triggers, exports, true, gpu);
+    const auto bodies = QueryRigidbodiesInBounds(minimum, maximum, layers, triggers);
+    return GatherRigidbodyStateRows(bodies, fields, includeBoxes, triggers, exports, true);
 }
 
 const PhysicsBodyMotionState *PhysicsWorld::FindCachedMotionState(PhysicsDomain &domain, uint32_t id,
@@ -3884,11 +3380,10 @@ bool PhysicsWorld::ServicePresentationPoseReads(const std::vector<Transform *> &
     bodies.reserve(dependencies.size());
     for (const auto &entry : dependencies)
         bodies.push_back(entry.second);
-    return ServicePresentationPoseReads(domain, bodies, nullptr);
+    return ServicePresentationPoseReads(domain, bodies);
 }
 
-bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std::vector<Rigidbody *> &bodies,
-                                                const std::shared_ptr<const JoltGpuScene::Publication> &publication)
+bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std::vector<Rigidbody *> &bodies)
 {
     if (bodies.empty())
         return true;
@@ -3900,7 +3395,7 @@ bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std
         if (!m_gpuPublicationReader->Poll(*job->request))
             return false;
         domain.presentationPoseReads.reset();
-        if (job->publication != publication || job->nativePublication != domain.nativeFixedPublication ||
+        if (job->nativePublication != domain.nativeFixedPublication ||
             job->generation != domain.queryGeneration.load(std::memory_order_acquire))
             return false;
         FrameWorkOwner::Scope materialize(*m_gpuWork);
@@ -3917,33 +3412,17 @@ bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std
     }
     if (missing.empty())
         return true;
-    if (!publication && !domain.nativeFixedPublication)
+    if (!domain.nativeFixedPublication)
         return false;
     auto job = std::make_shared<PhysicsDomain::PresentationPoseReads>();
-    job->publication = publication;
     job->nativePublication = domain.nativeFixedPublication;
     job->generation = domain.queryGeneration.load(std::memory_order_acquire);
     FrameWorkOwner::Scope preparation(*m_gpuWork);
-    PhysicsGpuMotionExport motion;
-    if (job->nativePublication) {
-        std::vector<uint32_t> ids;
-        ids.reserve(missing.size());
-        for (const auto *body : missing)
-            ids.push_back(body->GetBodyId());
-        motion = job->nativePublication->GatherMotion(0, ids);
-    } else {
-        motion.poses = ScenePoseSource(*publication);
-        motion.bodies.reserve(missing.size());
-        for (const auto *body : missing) {
-            const auto slot = publication->directory->FindBodySlot(body->GetBodyId());
-            if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
-                throw JoltGpuQueryRequestError("Presentation pose requires an accepted body identity");
-            const auto &actor = *publication->directory->actors[slot];
-            if (actor.rigidbodyComponentId != body->GetComponentID() || actor.rigidbody != body->GetECSHandle())
-                throw JoltGpuQueryRequestError("Presentation pose differs from its retained Rigidbody");
-            motion.bodies.push_back(SceneMotionBinding(*publication, actor));
-        }
-    }
+    std::vector<uint32_t> ids;
+    ids.reserve(missing.size());
+    for (const auto *body : missing)
+        ids.push_back(body->GetBodyId());
+    auto motion = job->nativePublication->GatherMotion(0, ids);
     job->read = PhysicsGpuMotionRead::Prepare(*m_gpuHost, motion.poses, std::move(motion.bodies), fields);
     job->request = EnsureGpuPublicationReader().Enqueue(job->read.packet);
     domain.presentationPoseReads = std::move(job);
@@ -3992,48 +3471,25 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
             return *cached;
     if (!sleeping && domain.presentationPoseReadDepth)
         throw PhysicsPresentationPosePending{};
-    if (!domain.UsesGpu() && ReadBodyBackend(domain, id) == Backend::Cpu) {
+    if (!domain.UsesGpu()) {
+        (void)ReadBodyBackend(domain, id);
         RunCpuControl(domain);
         const auto state = domain.cpuScene->ReadMotionState(id, fields, sleeping);
         if (static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All))
             domain.requestedMotion[id] = {domain.queryGeneration.load(std::memory_order_acquire), state, fields};
         return state;
     }
-    PhysicsGpuMotionRead read;
-    uint64_t generation = 0;
     auto readFields = static_cast<uint32_t>(fields);
     if (readFields & static_cast<uint32_t>(PresentationPoseFields))
         readFields |= static_cast<uint32_t>(PresentationPoseFields);
     const auto requested = static_cast<PhysicsStateFields>(readFields);
-    std::exception_ptr error;
-    if (domain.UsesGpu()) {
-        const auto &publication = ReadInxPhyGpuQueryPublication(domain);
-        auto motion = publication.GatherMotion(0, {id});
-        generation = domain.queryGeneration.load(std::memory_order_acquire);
-        read = PhysicsGpuMotionRead::Prepare(*m_gpuHost, motion.poses, std::move(motion.bodies), requested,
-                                             sleeping != nullptr);
-        if (read.packet)
-            RunPreparedWork(domain, read.packet);
-    } else {
-        RunGpuPublicationRead(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-            return PrepareJoltGpuQueryWork(
-                [&]() -> JoltGpuControlWork {
-                    const auto slot = publication->directory->FindBodySlot(id);
-                    if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
-                        throw JoltGpuQueryRequestError("Physics state requires an accepted live body");
-                    const auto &identity = *publication->directory->actors[slot];
-                    generation = domain.queryGeneration.load(std::memory_order_acquire) +
-                                 static_cast<uint64_t>(domain.controlNumericalChange);
-                    read = PhysicsGpuMotionRead::Prepare(*m_gpuHost, ScenePoseSource(*publication),
-                                                         {SceneMotionBinding(*publication, identity)}, requested,
-                                                         sleeping != nullptr);
-                    return read.packet;
-                },
-                error);
-        });
-    }
-    if (error)
-        std::rethrow_exception(error);
+    const auto &publication = ReadInxPhyGpuQueryPublication(domain);
+    auto motion = publication.GatherMotion(0, {id});
+    const auto generation = domain.queryGeneration.load(std::memory_order_acquire);
+    const auto read = PhysicsGpuMotionRead::Prepare(*m_gpuHost, motion.poses, std::move(motion.bodies), requested,
+                                                    sleeping != nullptr);
+    if (read.packet)
+        RunPreparedWork(domain, read.packet);
     FrameWorkOwner::Scope materialize(*m_gpuWork);
     std::vector<bool> activity;
     const auto result = read.Read(sleeping ? &activity : nullptr).front();
@@ -4149,49 +3605,6 @@ void PhysicsWorld::RaycastBatch(const float *origins, const float *directions, s
     RaycastBatchPublished(origins, directions, count, maximum, hits, mask, layers, triggers, generation, profile, false,
                           cpuEpoch);
 }
-physics::inxphygpu::InxPhyGpuPreparedRayBatch
-PhysicsWorld::RunGpuRays(PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
-                         const std::vector<physics::inxphygpu::InxPhyGpuRay> &rays,
-                         const physics::inxphygpu::InxPhyGpuDeviceRays *device, const PhysicsDeviceRayOutputs *outputs,
-                         const Collider *target, uint32_t allHitCapacity) const
-{
-    using namespace physics::inxphygpu;
-    const size_t count = device ? device->count : rays.size();
-    std::unique_ptr<PhysicsSceneRayPlan> replacement;
-    auto *plan = domain.sceneRays.get();
-    InxPhyGpuPreparedRayBatch batch;
-    ObserveSpatialGpuQuery(domain, publication, [&](const auto &accepted) {
-        std::vector<rhi::ComputeBufferUpdate> uploads;
-        if (!plan || !plan->Matches(*accepted) || plan->query.Capacity() < count) {
-            const auto capacity = std::max(count, plan ? size_t{plan->query.Capacity()} : size_t{64});
-            auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, static_cast<uint32_t>(capacity));
-            replacement = std::move(prepared.first);
-            uploads = std::move(prepared.second);
-            plan = replacement.get();
-        }
-        if (!device) {
-            auto &input = uploads.emplace_back(rhi::ComputeBufferUpdate{
-                plan->query.Inputs(), 0, std::vector<uint8_t>(rays.size() * sizeof(InxPhyGpuRay))});
-            if (target) {
-                const auto range =
-                    plan->colliderGeometry.find({target->GetComponentID(), target->GetLifetimeGeneration()});
-                if (range == plan->colliderGeometry.end())
-                    return JoltGpuControlWork{};
-                auto ray = rays.front();
-                ray.filter = {range->second.first, range->second.second, InxPhyGpuRayTargetGeometry, 0};
-                std::memcpy(input.data.data(), &ray, sizeof(ray));
-            } else {
-                std::memcpy(input.data.data(), rays.data(), input.data.size());
-            }
-        }
-        batch = plan->query.Prepare(*m_gpuHost, ScenePoseSource(*accepted), static_cast<uint32_t>(count), !outputs,
-                                    std::move(uploads), device, outputs, allHitCapacity);
-        return JoltGpuControlWork{batch.packet};
-    });
-    if (replacement && batch.packet)
-        domain.sceneRays = std::move(replacement);
-    return batch;
-}
 
 void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *directions, size_t count, float maximum,
                                          RaycastHit *hits, uint8_t *mask, uint32_t layers, bool triggers,
@@ -4247,18 +3660,6 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
         const std::shared_lock queryRead(domain.cpuScene->QueryMutex());
         JoltCpuQueries(*domain.cpuScene)
             .RaycastBatch(origins, directions, count, maximum, hits, mask, {layers, triggers}, profile);
-    } else if (const auto gpu = ReadGpuSpatialQueryPublication(domain)) {
-        using namespace physics::inxphygpu;
-        const auto rays = PackSceneRays(origins, directions, count, maximum, layers, triggers);
-        const auto batch = RunGpuRays(domain, gpu, rays, nullptr, nullptr);
-        FrameWorkOwner::Scope materialize(*m_gpuWork);
-        std::vector<InxPhyGpuRayHit> records(count);
-        batch.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(InxPhyGpuRayHit));
-        for (size_t i = 0; i < count; ++i) {
-            mask[i] = DecodeSceneRayHit(*domain.sceneRays, rays[i], records[i], hits[i]);
-            if (profile && mask[i])
-                ++profile->publishedHits;
-        }
     } else {
         for (size_t i = 0; i < count; ++i) {
             const auto offset = i * 3;
@@ -4302,25 +3703,15 @@ PhysicsRigidbodyBatchSource PhysicsWorld::ExportRaycastBatch(const std::vector<p
     RequireHealthyStep(domain);
     if (!domain.UsesGpu())
         throw std::invalid_argument("Device raycast output requires a GPU physics scene");
-    if (domain.UsesGpu()) {
-        const auto &publication = ReadInxPhyGpuQueryPublication(domain);
-        if (device ? device->count != 0 : !host.empty()) {
-            const auto batch = device ? domain.nativeRuntime->PrepareDeviceRaycast(publication, 0, *device, &outputs)
-                                      : domain.nativeRuntime->PrepareRaycast(publication, 0, host, false, &outputs);
-            RunPreparedWork(domain, batch.query.packet);
-        }
-        const auto &identity = publication.worlds.front().identity;
-        return {identity.worldId, identity.simulationEpoch, identity.fixedStepIndex,
-                domain.queryGeneration.load(std::memory_order_acquire)};
+    const auto &publication = ReadInxPhyGpuQueryPublication(domain);
+    if (device ? device->count != 0 : !host.empty()) {
+        const auto batch = device ? domain.nativeRuntime->PrepareDeviceRaycast(publication, 0, *device, &outputs)
+                                  : domain.nativeRuntime->PrepareRaycast(publication, 0, host, false, &outputs);
+        RunPreparedWork(domain, batch.query.packet);
     }
-    // The same publication represents an empty scene and produces one miss per ray.
-    RequireGpu(domain);
-    SealSpatialQuery(domain);
-    const auto publication = ReadGpuQueryPublication(domain);
-    const auto generation = domain.queryGeneration.load(std::memory_order_acquire);
-    if (device ? device->count != 0 : !host.empty())
-        (void)RunGpuRays(domain, publication, host, device, &outputs);
-    return {publication->worldId, publication->simulationEpoch, publication->fixedStepIndex, generation};
+    const auto &identity = publication.worlds.front().identity;
+    return {identity.worldId, identity.simulationEpoch, identity.fixedStepIndex,
+            domain.queryGeneration.load(std::memory_order_acquire)};
 }
 
 bool PhysicsWorld::Raycast(const glm::vec3 &origin, const glm::vec3 &direction, float maximum, RaycastHit &hit,
@@ -5002,26 +4393,10 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
     hit = {};
     if (!FindBodyRegistration(id))
         return false;
-    if (ReadBodyBackend(domain, id) == Backend::Cpu) {
-        if (!domain.cpuScene->HasBody(id))
-            RunCpuControl(domain);
-        const JoltCpuQueries::ColliderIdentity target{collider.GetComponentID(), collider.GetLifetimeGeneration()};
-        return JoltCpuQueries(*domain.cpuScene).Raycast(origin, direction, maximum, hit, {UINT32_MAX, true, target});
-    }
-    RunGpuPublicationRead(domain, {});
-    const auto publication = ReadGpuSpatialQueryPublication(domain);
-    if (!publication)
-        return false;
-    const float coordinates[3] = {origin.x, origin.y, origin.z};
-    const float axes[3] = {direction.x, direction.y, direction.z};
-    const auto rays = PackSceneRays(coordinates, axes, 1, maximum, UINT32_MAX, true);
-    const auto batch = RunGpuRays(domain, publication, rays, nullptr, nullptr, &collider);
-    if (!batch.packet)
-        return false;
-    FrameWorkOwner::Scope materialize(*m_gpuWork);
-    physics::inxphygpu::InxPhyGpuRayHit record;
-    batch.packet->Readback(0)->ReadInto(&record, sizeof(record));
-    return DecodeSceneRayHit(*domain.sceneRays, rays.front(), record, hit);
+    (void)ReadBodyBackend(domain, id);
+    RunCpuControl(domain);
+    const JoltCpuQueries::ColliderIdentity target{collider.GetComponentID(), collider.GetLifetimeGeneration()};
+    return JoltCpuQueries(*domain.cpuScene).Raycast(origin, direction, maximum, hit, {UINT32_MAX, true, target});
 }
 
 glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &collider, const glm::vec3 &point) const
@@ -5063,32 +4438,7 @@ glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &collider, const g
             throw std::runtime_error("Active Collider has no accepted geometry for a closest-point query");
         return *closest;
     }
-    const auto publication = ReadGpuSpatialQueryPublication(domain);
-    if (!publication)
-        throw std::runtime_error("Active Collider has no accepted geometry for a closest-point query");
-    const auto key = std::make_pair(collider.GetComponentID(), collider.GetLifetimeGeneration());
-    std::unique_ptr<PhysicsSceneRayPlan> replacement;
-    auto *plan = domain.sceneRays.get();
-    std::shared_ptr<rhi::PreparedComputeBatch> result;
-    ObserveSpatialGpuQuery(domain, publication, [&](const auto &accepted) {
-        std::vector<rhi::ComputeBufferUpdate> uploads;
-        if (!plan || !plan->Matches(*accepted)) {
-            auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, plan ? plan->query.Capacity() : 64);
-            replacement = std::move(prepared.first);
-            uploads = std::move(prepared.second);
-            plan = replacement.get();
-        }
-        const auto range = plan->colliderGeometry.find(key);
-        if (range == plan->colliderGeometry.end())
-            return JoltGpuControlWork{};
-        result = plan->query.PrepareClosestPoint(
-            *m_gpuHost, ScenePoseSource(*accepted), {point.x, point.y, point.z, 0.0f}, range->second.first,
-            range->second.second, mesh && mesh->IsPublishedMeshClosed(), std::move(uploads));
-        return JoltGpuControlWork{result};
-    });
-    if (replacement && result)
-        domain.sceneRays = std::move(replacement);
-    return materialize(result);
+    throw std::runtime_error("Active Collider has no accepted geometry for a closest-point query");
 }
 
 std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const glm::vec3 &direction, float maximum,
@@ -5120,32 +4470,7 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
     SealSpatialQuery(domain);
     if (domain.cpuScene)
         return JoltCpuQueries(*domain.cpuScene).RaycastAll(origin, direction, maximum, {layers, triggers});
-    const auto gpu = ReadGpuSpatialQueryPublication(domain);
-    std::vector<RaycastHit> hits;
-    if (!gpu)
-        return hits;
-    const float coordinates[3] = {origin.x, origin.y, origin.z};
-    const float axes[3] = {direction.x, direction.y, direction.z};
-    const auto rays = PackSceneRays(coordinates, axes, 1, maximum, layers, triggers);
-    using physics::inxphygpu::InxPhyGpuRayHit;
-    const auto read = [&](uint32_t capacity) {
-        const auto batch = RunGpuRays(domain, gpu, rays, nullptr, nullptr, nullptr, capacity);
-        std::vector<InxPhyGpuRayHit> rows(size_t{capacity} + 1);
-        FrameWorkOwner::Scope materialize(*m_gpuWork);
-        batch.packet->Readback(0)->ReadInto(rows.data(), rows.size() * sizeof(InxPhyGpuRayHit));
-        return rows;
-    };
-    // Read a short result prefix. Dense intersections expand to the exact size
-    // against the same retained poses, regardless of the scene's triangle count.
-    auto rows = read(capacity);
-    const uint32_t count = rows.front().identity[0];
-    if (count > capacity)
-        rows = read(count);
-    hits.resize(count);
-    for (size_t i = 0; i < hits.size(); ++i)
-        (void)DecodeSceneRayHit(*domain.sceneRays, rays.front(), rows[i + 1], hits[i]);
-    std::sort(hits.begin(), hits.end(), order);
-    return hits;
+    return {};
 }
 
 std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &center, float radius, uint32_t layers,
@@ -5166,62 +4491,16 @@ std::vector<Collider *> PhysicsWorld::OverlapCapsule(const glm::vec3 &a, const g
     auto &domain = CurrentDomain();
     return QueryColliders(domain, JoltCpuQueries::Capsule{a, b, radius}, layers, triggers);
 }
-std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodyCandidatesInBounds(
-    PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &gpu, const glm::vec3 &minimum,
-    const glm::vec3 &maximum, uint32_t layers, bool triggers) const
-{
-    (void)Vector(minimum);
-    (void)Vector(maximum);
-    if (glm::any(glm::greaterThan(minimum, maximum)))
-        throw std::invalid_argument("Physics query bounds require minimum <= maximum");
-    if (domain.cpuScene) {
-        auto bodies = JoltCpuQueries(*domain.cpuScene).QueryRigidbodiesInBounds(minimum, maximum, {layers, triggers});
-        std::sort(bodies.begin(), bodies.end(),
-                  [](const auto *a, const auto *b) { return a->GetComponentID() < b->GetComponentID(); });
-        return bodies;
-    }
-    if (!gpu || !layers)
-        return {};
-    std::unique_ptr<PhysicsSceneRayPlan> replacement;
-    auto *plan = domain.sceneRays.get();
-    physics::inxphygpu::InxPhyGpuPreparedBodyBounds query;
-    ObserveSpatialGpuQuery(domain, gpu, [&](const auto &accepted) {
-        std::vector<rhi::ComputeBufferUpdate> uploads;
-        if (!plan || !plan->Matches(*accepted)) {
-            auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, plan ? plan->query.Capacity() : 64);
-            replacement = std::move(prepared.first);
-            uploads = std::move(prepared.second);
-            plan = replacement.get();
-        }
-        query = plan->query.PrepareBodyBounds(
-            *m_gpuHost, ScenePoseSource(*accepted), {minimum.x, minimum.y, minimum.z, 0.0f},
-            {maximum.x, maximum.y, maximum.z, 0.0f}, layers, triggers, std::move(uploads));
-        return JoltGpuControlWork{query.packet};
-    });
-    if (!query.packet)
-        return {};
-    if (replacement)
-        domain.sceneRays = std::move(replacement);
-    FrameWorkOwner::Scope materialize(*m_gpuWork);
-    auto &store = PhysicsECSStore::Instance();
-    std::vector<Rigidbody *> bodies;
-    for (const auto row : query.ReadMatchingRows()) {
-        const auto &identity = *gpu->directory->actors[gpu->bodyBase + row];
-        if (store.IsValid(identity.rigidbody))
-            bodies.push_back(store.GetRigidbody(identity.rigidbody).owner);
-    }
-    return bodies;
-}
 
 std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum,
                                                                 uint32_t layers, bool triggers) const
 {
     auto &domain = CurrentDomain();
+    (void)Vector(minimum);
+    (void)Vector(maximum);
+    if (glm::any(glm::greaterThan(minimum, maximum)))
+        throw std::invalid_argument("Physics query bounds require minimum <= maximum");
     if (domain.UsesGpu()) {
-        (void)Vector(minimum);
-        (void)Vector(maximum);
-        if (glm::any(glm::greaterThan(minimum, maximum)))
-            throw std::invalid_argument("Physics query bounds require minimum <= maximum");
         const auto &publication = ReadInxPhyGpuQueryPublication(domain);
         const auto query =
             domain.nativeRuntime->PrepareBodyBounds(publication, 0, {minimum.x, minimum.y, minimum.z, 0},
@@ -5239,8 +4518,12 @@ std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 
         return bodies;
     }
     SealSpatialQuery(domain);
-    return QueryRigidbodyCandidatesInBounds(domain, ReadGpuSpatialQueryPublication(domain), minimum, maximum, layers,
-                                            triggers);
+    if (!domain.cpuScene)
+        return {};
+    auto bodies = JoltCpuQueries(*domain.cpuScene).QueryRigidbodiesInBounds(minimum, maximum, {layers, triggers});
+    std::sort(bodies.begin(), bodies.end(),
+              [](const auto *a, const auto *b) { return a->GetComponentID() < b->GetComponentID(); });
+    return bodies;
 }
 bool PhysicsWorld::SphereCast(const glm::vec3 &center, float radius, const glm::vec3 &direction, float maximum,
                               RaycastHit &hit, uint32_t layers, bool triggers) const
@@ -5272,8 +4555,7 @@ bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, c
         throw std::invalid_argument("BoxCollider sweep displacement exceeds device coordinates");
     if (!domain.UsesGpu()) {
         SealSpatialQuery(domain);
-        if (domain.cpuScene)
-            return JoltCpuQueries(*domain.cpuScene).SweepBox(box, position, rotation, displacement, hit);
+        return domain.cpuScene && JoltCpuQueries(*domain.cpuScene).SweepBox(box, position, rotation, displacement, hit);
     }
     const auto layers = TagLayerManager::Instance().GetLayerCollisionMask(object->GetLayer());
     const auto volume = CookBoxSweep(box, position, rotation, layers);
@@ -5285,19 +4567,6 @@ bool PhysicsWorld::CapsuleCast(const glm::vec3 &a, const glm::vec3 &b, float rad
 {
     return QueryClosestCast(CurrentDomain(), JoltCpuQueries::Capsule{a, b, radius}, direction, maximum, hit, layers,
                             triggers);
-}
-std::shared_ptr<const PhysicsShapeGeometry>
-PhysicsWorld::ResolveShapeGeometry(PhysicsDomain &domain, const JoltGpuScene::PublishedLeaf &leaf) const
-{
-    const auto *shape = leaf.shape.GetPtr();
-    if (!shape)
-        throw std::runtime_error("Published shape state has no retained immutable geometry");
-    if (const auto found = domain.shapeGeometry.find(shape); found != domain.shapeGeometry.end())
-        if (auto geometry = found->second.lock())
-            return geometry;
-    auto geometry = PhysicsShapeGeometry::DescribeLeaf(*shape);
-    domain.shapeGeometry[shape] = geometry;
-    return geometry;
 }
 
 std::vector<PhysicsShapeState> PhysicsWorld::GetBodyShapeStates(uint32_t id, bool triggers) const
@@ -5341,59 +4610,27 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
     auto &domain = *scene.GetRuntimeWorld()->physics;
     if (!consumer)
         throw std::invalid_argument("GPU particle collision export requires a live consumer");
-    domain.particleCollisionConsumer = consumer;
+    if (!domain.UsesGpu())
+        throw std::invalid_argument("Particle collision requires a GPU physics scene");
     using namespace physics::inxphygpu;
-    if (domain.UsesGpu()) {
-        (void)ReadInxPhyGpuQueryPublication(domain);
-        const auto publication = domain.nativeFixedPublication;
-        std::shared_ptr<particle::GpuParticleCollisionDevicePayload> result;
-        InxPhyGpuSceneRuntime::PublicationWork work;
-        {
-            FrameWorkOwner::Scope preparation(*m_gpuWork);
-            work = domain.nativeRuntime->PrepareParticleCollision(*publication, 0, &scene, previous, revision,
-                                                                  [&](auto payload) { result = std::move(payload); });
-        }
-        for (;;) {
-            RunPreparedWork(domain, std::move(work.packet));
-            FrameWorkOwner::Scope materialize(*m_gpuWork);
-            if (work.seal)
-                work.seal();
-            if (!work.continueAfterReceipt)
-                break;
-            work = work.continueAfterReceipt(*publication);
-        }
-        return result;
+    (void)ReadInxPhyGpuQueryPublication(domain);
+    const auto publication = domain.nativeFixedPublication;
+    std::shared_ptr<particle::GpuParticleCollisionDevicePayload> result;
+    InxPhyGpuSceneRuntime::PublicationWork work;
+    {
+        FrameWorkOwner::Scope preparation(*m_gpuWork);
+        work = domain.nativeRuntime->PrepareParticleCollision(*publication, 0, &scene, previous, revision,
+                                                              [&](auto payload) { result = std::move(payload); });
     }
-    auto *plan = domain.sceneRays.get();
-    std::unique_ptr<PhysicsSceneRayPlan> replacement;
-    std::shared_ptr<InxPhyGpuParticleExport::Work> work;
-    const auto prepareCollisionExport = [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        std::vector<rhi::ComputeBufferUpdate> uploads;
-        if (!plan || !plan->Matches(*publication) || !plan->particleSurfaces) {
-            auto prepared = BuildSceneRayPlan(*m_gpuHost, *publication, plan ? plan->query.Capacity() : 64, true);
-            replacement = std::move(prepared.first);
-            uploads = std::move(prepared.second);
-            plan = replacement.get();
-        }
-        if (!m_gpuParticleExport)
-            m_gpuParticleExport =
-                std::make_unique<InxPhyGpuParticleExport>(*m_gpuHost, PhysicsShaderTarget(*m_gpuHost));
-        const InxPhyGpuParticleExport::Source source{
-            plan->query.ParticleGeometry(),
-            ScenePoseSource(*publication),
-            *plan->particleSurfaces,
-            {publication->worldId, publication->simulationEpoch, publication->fixedStepIndex},
-            publication->directory};
-        work = std::make_shared<InxPhyGpuParticleExport::Work>(m_gpuParticleExport->Prepare(
-            *m_gpuHost, source, &scene, previous, revision, std::move(uploads), plan->query.TakeInitialization()));
-        return JoltGpuControlWork{work->packet,
-                                  [this, work] { return JoltGpuControlWork{work->PrepareGrid(*m_gpuHost)}; }};
-    };
-    RunGpuPublicationRead(domain, prepareCollisionExport, true);
-    FrameWorkOwner::Scope materialize(*m_gpuWork);
-    auto result = work->Finish();
-    if (replacement)
-        domain.sceneRays = std::move(replacement);
+    for (;;) {
+        RunPreparedWork(domain, std::move(work.packet));
+        FrameWorkOwner::Scope materialize(*m_gpuWork);
+        if (work.seal)
+            work.seal();
+        if (!work.continueAfterReceipt)
+            break;
+        work = work.continueAfterReceipt(*publication);
+    }
     return result;
 }
 
