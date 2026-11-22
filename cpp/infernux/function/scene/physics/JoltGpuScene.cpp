@@ -653,6 +653,7 @@ class JoltGpuScene::Impl
             throw std::invalid_argument("GPU Joint endpoints belong to different RuntimeWorld owners");
         if (ownerBody == connectedBody || !slots[a].authored || (b != InvalidQueryBodySlot && !slots[b].authored))
             throw std::invalid_argument("A GPU joint requires distinct authored body endpoints");
+        FlushSceneCommands(*slots[a].partition);
         const auto id = actors.AllocateJointIdentity();
         author.bodies.x = b;
         author.bodies.y = a;
@@ -683,6 +684,7 @@ class JoltGpuScene::Impl
         if (updates.empty())
             return;
         auto &domain = BodyDomain(GetAuthoredJoint(updates.front().id).bodyIdA);
+        FlushSceneCommands(domain);
         auto &pending = domain.pending;
         struct CapturedUpdate
         {
@@ -766,6 +768,7 @@ class JoltGpuScene::Impl
             return;
         auto *owner = found->second.owner;
         auto &domain = BodyDomain(found->second.value.bodyIdA);
+        FlushSceneCommands(domain);
         JoltGpuControlGroup wake;
         AddJointWake(wake, found->second.value);
         authoredJoints.erase(found);
@@ -777,6 +780,7 @@ class JoltGpuScene::Impl
     void DestroyJointsForBody(uint32_t id)
     {
         auto &domain = BodyDomain(id);
+        FlushSceneCommands(domain);
         std::vector<PhysicsConstraintOwner *> owners;
         JoltGpuControlGroup wake;
         for (auto it = authoredJoints.begin(); it != authoredJoints.end();) {
@@ -902,6 +906,7 @@ class JoltGpuScene::Impl
             throw std::logic_error("Cannot grow a closed GPU world partition");
         if (capacity <= domain.capacity)
             return;
+        FlushSceneCommands(domain);
         const auto previous = domain.capacity;
         domain.records.resize(capacity, UINT32_MAX);
         domain.freeLocals.reserve(capacity);
@@ -1137,6 +1142,7 @@ class JoltGpuScene::Impl
     void StageActor(uint32_t id, PreparedGpuActor actor, bool resetMotion)
     {
         auto &domain = BodyDomain(id);
+        FlushSceneCommands(domain);
         auto &pending = domain.pending;
         auto &pendingCompletions = domain.pendingCompletions;
         const uint32_t index = RequireSlot(id);
@@ -1273,6 +1279,7 @@ class JoltGpuScene::Impl
     void SetResident(uint32_t id, bool resident, bool preserveVelocity)
     {
         auto &domain = BodyDomain(id);
+        FlushSceneCommands(domain);
         auto &pending = domain.pending;
         auto &pendingCompletions = domain.pendingCompletions;
         const uint32_t index = RequireSlot(id);
@@ -1304,14 +1311,22 @@ class JoltGpuScene::Impl
         slot.desiredResident = resident;
     }
 
-    void QueueBodyCommand(const PhysicsBodyCommand &command, const PhysicsTargetSource &source)
+    void FlushSceneCommands(Partition &domain)
+    {
+        // Preserve the command order across author topology edits during migration.
+        auto &sceneCommands = domain.world->physics->gpuBodyCommands;
+        for (const auto &entry : sceneCommands)
+            AppendSceneCommand(domain, entry.command, entry.target);
+        sceneCommands.clear();
+    }
+
+    void AppendSceneCommand(Partition &domain, const PhysicsBodyCommand &command, const PhysicsTargetSource &source)
     {
         const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation);
         const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation);
         if ((pose && !pose->position && !pose->rotation) || (velocity && !velocity->linear && !velocity->angular))
             return;
         const auto id = command.bodyId;
-        auto &domain = BodyDomain(id);
         auto &pending = domain.pending;
         auto &pendingCompletions = domain.pendingCompletions;
         const uint32_t index = RequireSlot(id);
@@ -1639,7 +1654,7 @@ class JoltGpuScene::Impl
         // Inactive authoring has no Play consumer. Its queued FIFO is retained, not GPU-ready maintenance.
         // Preparing/playing runtime Worlds, and every cleanup/retirement, still close clean refill.
         return domain.cleanup || domain.retiring ||
-               (!domain.pending.empty() &&
+               ((!domain.pending.empty() || !domain.world->physics->gpuBodyCommands.empty()) &&
                 (domain.world != &SceneManager::Instance().AuthoringWorld() || domain.world->simulation.isPlaying));
     }
 
@@ -1654,7 +1669,8 @@ class JoltGpuScene::Impl
     {
         const auto &published = domain.published;
         const auto &cache = domain.articulationCache;
-        return domain.world->physics && !domain.world->physics->admittedParticipants && domain.pending.empty() &&
+        return domain.world->physics && !domain.world->physics->admittedParticipants &&
+               domain.world->physics->gpuBodyCommands.empty() && domain.pending.empty() &&
                domain.row < storage.GetModel().worlds.size() && storage.GetModel().worlds[domain.row].leaves.w == 0 &&
                (!cache || (!cache->numeric && cache->trees.empty())) && published &&
                published->layoutGeneration == layoutGeneration && published->geometry &&
@@ -1696,6 +1712,7 @@ class JoltGpuScene::Impl
             return false;
         if (!FitsSharedWindow(domain))
             return false;
+        FlushSceneCommands(domain);
         JoltGpuTick *selected = &tick;
         if (writer) {
             if (peerWriters.size() == peerWriters.capacity())
@@ -1781,9 +1798,15 @@ class JoltGpuScene::Impl
             } else
                 ++it;
         }
+        auto &sceneCommands = domain.world->physics->gpuBodyCommands;
         std::vector<TargetCompletion> targets = domain.pendingCompletions;
-        targets.reserve(targets.size() + domain.records.size() * 2u +
+        targets.reserve(targets.size() + (domain.records.size() + sceneCommands.size()) * 2u +
                         (domain.candidateCompletions ? domain.candidateCompletions->size() : 0u));
+        for (const auto &entry : sceneCommands) {
+            AddCompletion(targets, entry.target, PositionChannel());
+            AddCompletion(targets, entry.target, RotationChannel());
+        }
+        sceneCommands.clear();
         if (domain.candidateCompletions)
             targets.insert(targets.end(), domain.candidateCompletions->begin(), domain.candidateCompletions->end());
         domain.pending.clear();
@@ -2217,11 +2240,6 @@ void JoltGpuScene::SetResident(uint32_t id, bool value, bool preserve)
 {
     m_impl->SetResident(id, value, preserve);
 }
-void JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &command, const PhysicsTargetSource &source)
-{
-    m_impl->QueueBodyCommand(command, source);
-}
-
 void JoltGpuScene::QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents)
 {
     if (intents.empty())
@@ -2229,6 +2247,7 @@ void JoltGpuScene::QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveInte
     auto &domain = m_impl->Domain(world);
     if (domain.closed || domain.retiring)
         throw std::logic_error("Cannot submit ragdoll drive to a closed World");
+    m_impl->FlushSceneCommands(domain);
     JoltGpuControlGroup wake;
     for (const auto &intent : intents) {
         auto &record = m_impl->authoredJoints.at(intent.id);
@@ -2277,6 +2296,7 @@ void JoltGpuScene::SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const P
         throw std::invalid_argument("Collider policy requires its live registered World");
     if (domain.queuedPairs == pairs)
         return;
+    m_impl->FlushSceneCommands(domain);
     JoltGpuControlGroup group;
     group.modelAccepted = [&domain, pairs]() noexcept { domain.acceptedPairs = pairs; };
     domain.pending.push_back(std::move(group));
@@ -2385,7 +2405,8 @@ bool JoltGpuScene::HasPendingControl(const RuntimeWorld &world) const
     if (!m_impl->domains.count(world.id))
         return false;
     const auto &domain = m_impl->Domain(world);
-    return !domain.pending.empty() || (domain.cursor && !domain.cursor->AreControlInputsAccepted());
+    return !world.physics->gpuBodyCommands.empty() || !domain.pending.empty() ||
+           (domain.cursor && !domain.cursor->AreControlInputsAccepted());
 }
 bool JoltGpuScene::TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
                                 const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer,

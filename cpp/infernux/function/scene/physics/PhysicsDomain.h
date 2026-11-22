@@ -6,6 +6,7 @@
 #include "../Scene.h"
 #include "JoltCpuContactPublication.h"
 #include "JoltGpuContactPublication.h"
+#include "PhysicsBodyCommand.h"
 #include "PhysicsContactPublication.h"
 #include "PhysicsFixedInputs.h"
 #include "PhysicsGpuRenderBindings.h"
@@ -52,6 +53,7 @@ struct PhysicsDomain final
     std::unordered_set<uint32_t> cpuInterpolated;
     std::optional<float> publishedCpuInterpolationAlpha;
     bool cpuFixedAdmitted = false;
+    std::vector<PhysicsSceneBodyCommand> gpuBodyCommands;
     // Shared by the queued authored moves and their retained component guards.
     std::shared_ptr<PhysicsTargetBatch> gpuTargetAuthors;
     bool gpuRegistered = false;

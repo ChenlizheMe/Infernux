@@ -76,13 +76,6 @@ struct InxPhyGpuSceneJointUpdate
         value;
 };
 
-struct InxPhyGpuSceneBodyCommand
-{
-    uint64_t worldId;
-    PhysicsBodyCommand command;
-    PhysicsTargetSource target{};
-};
-
 struct InxPhyGpuSceneImpulseBatch
 {
     uint64_t worldId;
@@ -255,8 +248,8 @@ class InxPhyGpuSceneRuntime final
     /// This source performs admission and submission, then seals the consumer's
     /// outputs after its receipt and before releasing the fixed publication.
     /// Fixed input rows follow the enrolled world order and are captured at admission.
-    void BeginFixed(std::vector<ContactStreamIdentity> identities,
-                    const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host, bool captureContacts = false,
+    void BeginFixed(std::vector<ContactStreamIdentity> identities, const std::vector<PhysicsSceneBodyCommand> &commands,
+                    bool host, bool captureContacts = false,
                     const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {},
                     std::vector<PhysicsFixedInputs> fixedInputs = {},
                     const std::vector<InxPhyGpuSceneImpulseBatch> &deviceImpulses = {},
@@ -264,7 +257,7 @@ class InxPhyGpuSceneRuntime final
     /// Apply world-scoped body and joint edits at each world's accepted simulation time.
     /// Forces and kinematic targets wait for the next accepted fixed step, while
     /// pose edits publish immediately. Joint changes wake their endpoints on integration.
-    void BeginEdits(const std::vector<InxPhyGpuSceneBodyCommand> &commands,
+    void BeginEdits(const std::vector<PhysicsSceneBodyCommand> &commands,
                     const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {});
     [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakePublication();
     [[nodiscard]] std::optional<InxPhyGpuHostBody> ReadHostBody(const InxPhyGpuFixedPublication &publication,
@@ -350,7 +343,7 @@ class InxPhyGpuSceneRuntime final
     [[nodiscard]] FrameWorkFacts Describe() const;
     void EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
                            std::vector<InxPhyGpuBodyCommand> &out) const;
-    void EncodeSceneBodyCommands(const std::vector<InxPhyGpuSceneBodyCommand> &commands, Operation &operation) const;
+    void EncodeSceneBodyCommands(const std::vector<PhysicsSceneBodyCommand> &commands, Operation &operation) const;
     void EncodeJointUpdates(const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
                             std::vector<InxPhyGpuJointParameterUpdate> &updates,
                             std::shared_ptr<InxPhyGpuScenePoseTargets> &poses) const;

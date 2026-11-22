@@ -548,7 +548,7 @@ std::optional<InxPhyGpuFixedPublication> InxPhyGpuSceneRuntime::TakeInitial()
 }
 
 void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
-                                       const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host,
+                                       const std::vector<PhysicsSceneBodyCommand> &commands, bool host,
                                        bool captureContacts, const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
                                        PublicationConsumer consumer, std::vector<PhysicsFixedInputs> fixedInputs,
                                        const std::vector<InxPhyGpuSceneImpulseBatch> &deviceImpulses,
@@ -776,7 +776,7 @@ void InxPhyGpuSceneRuntime::EncodeJointUpdates(const std::vector<InxPhyGpuSceneJ
     }
 }
 
-void InxPhyGpuSceneRuntime::BeginEdits(const std::vector<InxPhyGpuSceneBodyCommand> &commands,
+void InxPhyGpuSceneRuntime::BeginEdits(const std::vector<PhysicsSceneBodyCommand> &commands,
                                        const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
                                        PublicationConsumer consumer)
 {
@@ -800,7 +800,7 @@ void InxPhyGpuSceneRuntime::BeginEdits(const std::vector<InxPhyGpuSceneBodyComma
     BeginOperation(std::move(operation));
 }
 
-void InxPhyGpuSceneRuntime::EncodeSceneBodyCommands(const std::vector<InxPhyGpuSceneBodyCommand> &commands,
+void InxPhyGpuSceneRuntime::EncodeSceneBodyCommands(const std::vector<PhysicsSceneBodyCommand> &commands,
                                                     Operation &operation) const
 {
     std::shared_ptr<InxPhyGpuSceneKinematicTargets> nextTargets;

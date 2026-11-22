@@ -896,6 +896,7 @@ class PhysicsWorld
                          const std::function<void(PreparedGpuActor &)> &editGpu = {});
     void QueueBodyPose(uint32_t bodyId, const glm::vec3 *position, const glm::quat *rotation, bool cancelMove);
     void QueueBodyVelocity(uint32_t bodyId, const glm::vec3 &velocity, bool angular);
+    void RequireGpuCommandOwner(PhysicsDomain &domain) const;
     PhysicsTargetSource QueueGpuBodyCommand(PhysicsDomain &domain, const PhysicsBodyCommand &command,
                                             const PhysicsTargetAuthor *author = nullptr);
     PhysicsTargetSource QueueKinematicBodyCommand(uint32_t bodyId, const PhysicsBodyCommand::KinematicMove &,

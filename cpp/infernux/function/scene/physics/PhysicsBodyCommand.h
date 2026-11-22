@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PhysicsTargetReference.h"
+
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -58,5 +60,13 @@ struct PhysicsBodyCommand
 
     uint32_t bodyId;
     std::variant<Pose, Velocity, Force, ResetMotion, KinematicMove, Activity> operation;
+};
+
+/// Ordered author input retained by the scene until its next control or fixed boundary.
+struct PhysicsSceneBodyCommand
+{
+    uint64_t worldId;
+    PhysicsBodyCommand command;
+    PhysicsTargetSource target{};
 };
 } // namespace infernux

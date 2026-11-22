@@ -2961,7 +2961,6 @@ void PhysicsWorld::QueueBodyPose(uint32_t id, const glm::vec3 *position, const g
                                                           rotation ? std::make_optional(CpuRotation(q)) : std::nullopt,
                                                           cancelMove});
     if (entry.HasGpuBody()) {
-        RequireGpu(domain);
         QueueGpuBodyCommand(
             domain, {id, PhysicsBodyCommand::Pose{
                              position ? std::make_optional(*position) : std::nullopt,
@@ -2975,7 +2974,7 @@ void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate
     for (const auto &u : updates) {
         auto &domain = DomainForBody(u.bodyId);
         if (m_bodyActors.at(u.bodyId).HasGpuBody())
-            RequireGpu(domain);
+            RequireGpuCommandOwner(domain);
         (void)Vector(u.position);
         (void)Rotation(u.rotation);
     }
@@ -3180,7 +3179,6 @@ void PhysicsWorld::QueueBodyVelocity(uint32_t id, const glm::vec3 &v, bool angul
             id, JoltCpuControl::Velocity{angular ? std::nullopt : velocity, angular ? velocity : std::nullopt});
         return;
     }
-    RequireGpu(domain);
     const auto velocity = std::make_optional(v);
     QueueGpuBodyCommand(domain, {id, PhysicsBodyCommand::Velocity{angular ? std::nullopt : velocity,
                                                                   angular ? velocity : std::nullopt}});
@@ -3202,7 +3200,6 @@ void PhysicsWorld::QueueBodyForce(uint32_t id, int kind, int mode, const glm::ve
                                                            CpuPosition(origin)});
         return;
     }
-    RequireGpu(domain);
     QueueGpuBodyCommand(domain, {id, PhysicsBodyCommand::Force{static_cast<PhysicsForceKind>(kind),
                                                                static_cast<ForceMode>(mode), value, Vector(origin)}});
 }
@@ -3247,7 +3244,7 @@ void PhysicsWorld::ResetBodyMotionStates(const std::vector<PhysicsBodyMotionStat
         if (backend == Backend::StaticBoundary)
             throw std::invalid_argument("Physics reset requires a Rigidbody");
         if (backend == Backend::Gpu)
-            RequireGpu(domain);
+            RequireGpuCommandOwner(domain);
         if (domain.stepPending || IsFixedPublicationHeld(domain))
             throw std::logic_error("Physics reset requires completed fixed steps");
         (void)Vector(s.position);
@@ -4428,9 +4425,17 @@ void PhysicsWorld::RestoreColliderPairs(RuntimeWorld &world, const PhysicsCollid
     }
 }
 
+void PhysicsWorld::RequireGpuCommandOwner(PhysicsDomain &domain) const
+{
+    RequireHealthyStep(domain);
+    if (domain.retiring)
+        throw std::logic_error("Cannot submit a physics command to a retiring world");
+}
+
 PhysicsTargetSource PhysicsWorld::QueueGpuBodyCommand(PhysicsDomain &domain, const PhysicsBodyCommand &command,
                                                       const PhysicsTargetAuthor *author)
 {
+    RequireGpuCommandOwner(domain);
     PhysicsTargetSource source;
     if (author) {
         auto &batch = domain.gpuTargetAuthors;
@@ -4442,7 +4447,7 @@ PhysicsTargetSource PhysicsWorld::QueueGpuBodyCommand(PhysicsDomain &domain, con
         batch->records.push_back(*author);
         source = {batch, index};
     }
-    m_gpuScene->QueueBodyCommand(command, source);
+    domain.gpuBodyCommands.push_back({domain.owner.id, command, source});
     return source;
 }
 
@@ -4465,7 +4470,6 @@ PhysicsTargetSource PhysicsWorld::QueueKinematicBodyCommand(uint32_t id, const P
             native.rotation = CpuRotation(Rotation(*move.rotation));
         return domain.cpuControl->QueueMove(id, std::move(native), author);
     }
-    RequireGpu(domain);
     return QueueGpuBodyCommand(domain, {id, move}, author);
 }
 void PhysicsWorld::MoveBodyKinematic(uint32_t id, const glm::vec3 &position, const glm::quat &rotation, float dt,
@@ -4607,7 +4611,6 @@ void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t id, const glm::vec3 &posi
         domain.cpuControl->QueueTemporaryStaticMove(id, CpuPosition(p), CpuRotation(q), dt, kMaxTransformDriveSpeed);
     if (!entry.HasGpuBody())
         return;
-    RequireGpu(domain);
     QueueGpuBodyCommand(
         domain, {id, PhysicsBodyCommand::KinematicMove{position, targetRotation, dt, kMaxTransformDriveSpeed, true}});
 }
@@ -4632,7 +4635,6 @@ void PhysicsWorld::ActivateBody(uint32_t id)
         domain.cpuControl->Queue(id, JoltCpuControl::Awake{true});
         return;
     }
-    RequireGpu(domain);
     QueueGpuBodyCommand(domain, {id, PhysicsBodyCommand::Activity{true}});
 }
 void PhysicsWorld::DeactivateBody(uint32_t id)
@@ -4646,7 +4648,6 @@ void PhysicsWorld::DeactivateBody(uint32_t id)
         domain.cpuControl->Queue(id, JoltCpuControl::Awake{false});
         return;
     }
-    RequireGpu(domain);
     QueueGpuBodyCommand(domain, {id, PhysicsBodyCommand::Activity{false}});
 }
 std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const Collider &a, const glm::vec3 &positionA,
