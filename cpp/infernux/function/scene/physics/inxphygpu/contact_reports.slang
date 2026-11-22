@@ -51,7 +51,7 @@ void reportContacts<let HasPrescribed : bool, let Multiple : bool>(uint3 id)
     uint output = id.y;
     if (Multiple)
         output += fixedSteps[worlds] * worlds;
-    const uint stride = limits.y + ((settings[1].w & SceneCcdReportFlag) != 0u ? SceneCcdMaxImpacts : 0u);
+    const uint stride = limits.y + settings[2 + worlds].x;
     if (id.x == 0)
         stepStatus[worlds + output] = count;
     if (id.x >= count)
@@ -118,23 +118,24 @@ void appendSweptReports<let Multiple : bool>(uint3 id)
     const uint output = id.y + (Multiple ? fixedSteps[worlds] * worlds : 0u);
     const uint capacity = settings[0].y;
     const uint count = min(counts[id.y], capacity);
-    const uint sweptBase = id.y * (SceneCcdMaxImpacts + 1u);
+    const uint sweptCapacity = settings[2 + worlds].x;
+    const uint sweptBase = id.y * (sweptCapacity + 1u);
     const uint sweptCount = sweptReports[sweptBase].identity.x;
     if (id.x == 0)
         stepStatus[worlds + output] = count + sweptCount;
     if (id.x < sweptCount)
-        reports[output * (capacity + SceneCcdMaxImpacts) + count + id.x] = sweptReports[sweptBase + 1u + id.x];
+        reports[output * (capacity + sweptCapacity) + count + id.x] = sweptReports[sweptBase + 1u + id.x];
 }
 
 [shader("compute")]
-[numthreads(SceneCcdMaxImpacts, 1, 1)]
+[numthreads(64, 1, 1)]
 void append_swept_contact_reports(uint3 id : SV_DispatchThreadID)
 {
     appendSweptReports<false>(id);
 }
 
 [shader("compute")]
-[numthreads(SceneCcdMaxImpacts, 1, 1)]
+[numthreads(64, 1, 1)]
 void append_swept_contact_substep(uint3 id : SV_DispatchThreadID)
 {
     appendSweptReports<true>(id);

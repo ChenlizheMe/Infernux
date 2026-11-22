@@ -399,11 +399,12 @@ struct BodyControlSlots
 
 void AddSceneContinuousCollision(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision,
                                  const GeometrySlots &geometry, const ContactSlots &contacts,
-                                 const InxPhyGpuContactSolver &solver, float dt, uint32_t dimensions, uint32_t bodies,
-                                 uint32_t start, uint32_t positions, uint32_t velocities, uint32_t status,
-                                 const BodyControlSlots &controls, uint32_t reportSlot)
+                                 const InxPhyGpuContactSolver &solver, uint32_t impactCapacity, uint32_t stepSizes,
+                                 uint32_t dimensions, uint32_t bodies, uint32_t start, uint32_t positions,
+                                 uint32_t velocities, uint32_t status, const BodyControlSlots &controls,
+                                 uint32_t reportSlot)
 {
-    const ModelWords settings{FloatWord(dt), FloatWord(solver.linearCastThreshold),
+    const ModelWords settings{impactCapacity, FloatWord(solver.linearCastThreshold),
                               FloatWord(solver.minimumRestitutionSpeed), collision.filterConnectedBodies};
     std::vector<ModelWords> table{settings};
     table.insert(table.end(), model.sceneContinuousCollision.begin(), model.sceneContinuousCollision.end());
@@ -423,7 +424,8 @@ void AddSceneContinuousCollision(StepBuilder &b, const InxPhyGpuModel &model, co
            {14, motion, W, true},
            {16, status, R},
            {18, controls.prescribed, R},
-           {24, controls.fixedSteps, R}});
+           {24, controls.fixedSteps, R},
+           {25, stepSizes, R}});
     std::vector<Use> sweep{{2, geometry.shapes, R},
                            {5, contacts.materials, R},
                            {8, dimensions, R},
@@ -447,6 +449,7 @@ void AddSceneContinuousCollision(StepBuilder &b, const InxPhyGpuModel &model, co
            {11, positions, RW},
            {12, velocities, RW},
            {14, motion, R},
+           {16, status, RW},
            {23, controls.activity, RW}});
 }
 
@@ -604,6 +607,12 @@ struct ContactResponse
     uint32_t reportCapacity = 0;
 };
 
+struct SweptContactReports
+{
+    uint32_t slot = NoModelIndex;
+    uint32_t capacity = 0;
+};
+
 struct ReferenceWeights
 {
     uint32_t dimensions, dofs, mass, centeredDof, inertiaFrames, subtreeCom, topology;
@@ -717,7 +726,7 @@ AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, const ContactSlo
                    InxPhyGpuCollisionCapacity capacity, const InxPhyGpuContactSolver &solver, float timestep,
                    const ContactDynamics &dyn, std::vector<ComputeWorkDispatch> precondition, bool contactReports,
                    uint32_t substeps, uint32_t maxStorageBuffers, const SceneWakeWork &wake, uint32_t sceneJoints,
-                   const std::vector<InxPhyGpuStateHandoff::PoseTarget> &poseTargets, uint32_t sweptReports)
+                   const std::vector<InxPhyGpuStateHandoff::PoseTarget> &poseTargets, SweptContactReports swept)
 {
     const auto nv = model.dimensions.state[1];
     const auto nb = model.dimensions.state[2];
@@ -749,10 +758,10 @@ AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, const ContactSlo
     constexpr uint32_t ellipticCone = 1;
     const ModelWords worldDefaults{FloatWord(timestep), FloatWord(1.0f), FloatWord(solver.tolerance),
                                    FloatWord(solver.lineTolerance)};
-    std::vector<ModelWords> config(b.worlds + 2, worldDefaults);
+    std::vector<ModelWords> config(b.worlds + 3, worldDefaults);
     config[0] = {ng, contacts, rows, columns};
-    const bool reportSwept = sweptReports != NoModelIndex;
-    config[1] = {nb, nv, contacts, ellipticCone | (reportSwept ? SceneCcdReportFlag : 0u)};
+    config[1] = {nb, nv, contacts, ellipticCone};
+    config.back() = {swept.capacity, 0, 0, 0};
     const auto settings = b.Shared("constraintSettings", config);
 
     std::vector<ModelWords> topology(uint64_t{ng} + nb);
@@ -1078,7 +1087,7 @@ AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, const ContactSlo
     ContactResponse response{acceleration,    status,   contactTopology, NoModelIndex, {},
                              jointParameters, settings, worldDefaults,   {},           0};
     if (contactReports) {
-        const auto reportCapacity = uint64_t{contacts} + (reportSwept ? SceneCcdMaxImpacts : 0);
+        const auto reportCapacity = uint64_t{contacts} + swept.capacity;
         const auto output =
             b.Zero("contactReports", across(24 * reportCapacity * substeps), BufferUsageFlags::TransferSource);
         response.reportRecords = output;
@@ -1095,14 +1104,14 @@ AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, const ContactSlo
         const auto *entry = multiple ? (prescribed ? "capture_controlled_contact_substep" : "capture_contact_substep")
                                      : (prescribed ? "capture_controlled_contact_reports" : "capture_contact_reports");
         response.capture = b.Bind("contact_reports", entry, contacts, uses);
-        if (reportSwept) {
+        if (swept.capacity != 0) {
             std::vector<Use> append{
-                {0, settings, R}, {2, stream.counts, R}, {8, status, RW}, {9, output, W}, {13, sweptReports, R}};
+                {0, settings, R}, {2, stream.counts, R}, {8, status, RW}, {9, output, W}, {13, swept.slot, R}};
             if (multiple)
                 append.push_back({12, dyn.fixedSteps, R});
             response.appendSweptReports =
                 b.Bind("contact_reports", multiple ? "append_swept_contact_substep" : "append_swept_contact_reports",
-                       SceneCcdMaxImpacts, append);
+                       swept.capacity, append);
         }
     }
     return response;
@@ -1480,6 +1489,12 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         controlSlots = BindBodyControls(b, model, bodyCommandCapacity, multiple);
     }
     const bool detectContacts = collision && model.dimensions.layout[0] != 0;
+    uint32_t ccdImpactCapacity = 0;
+    if (detectContacts && solver && controlSlots && !model.sceneContinuousCollision.empty()) {
+        const auto &rows = model.sceneContinuousCollision;
+        const auto sources = std::count_if(rows.begin(), rows.end(), [](const auto &row) { return row[2] != 0; });
+        ccdImpactCapacity = std::max(32u, static_cast<uint32_t>(sources));
+    }
     const bool traceRays = rayLayout.raysPerWorld != 0;
     if (traceRays && model.dimensions.layout[0] != 0 && !collision)
         throw std::invalid_argument("inxphygpu rays require the compiled collision geometry");
@@ -1748,15 +1763,16 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                        bodyVelocity};
         const auto groups = controlSlots ? b.Zero("sceneWakeGroups", worldWords(4 * uint64_t{nb})) : NoModelIndex;
         const SceneWakeWork wake{controlSlots ? &*controlSlots : nullptr, groups, applied};
-        const bool sweep = controlSlots && !model.sceneContinuousCollision.empty();
-        uint32_t sweptReports = NoModelIndex;
+        SweptContactReports swept;
         if (contactSlots && solver) {
-            if (sweep && contactReports)
-                sweptReports = b.Zero("sweptContactReports", worldWords(24 * (uint64_t{SceneCcdMaxImpacts} + 1)));
+            if (ccdImpactCapacity != 0 && contactReports) {
+                const auto records = uint64_t{ccdImpactCapacity} + 1;
+                swept = {b.Zero("sweptContactReports", worldWords(24 * records)), ccdImpactCapacity};
+            }
             response = AddContactResponse(b, model, *contactSlots, capacity, *solver, substepDt, dynamics,
                                           std::move(massSolves), contactReports, substeps,
                                           host.device.GetCapabilities().limits.maxStorageBuffersPerStage, wake,
-                                          sceneJointDescriptors, handoff.poseTargets, sweptReports);
+                                          sceneJointDescriptors, handoff.poseTargets, swept);
             reference = {dimensions, dofs, mass, centeredDof, inertialFrame, subtreeCom, response->topology};
             const std::array singleWorld{positions,
                                          pose,
@@ -1830,10 +1846,10 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         const auto *entry = positionEntries[2 * controlSlots.has_value() + sceneDynamics][response.has_value()];
         if (nj != 0)
             b.dispatches.push_back(b.Bind("euler", entry, nj, integratePosition));
-        if (response && sweep)
-            AddSceneContinuousCollision(b, model, *collision, *particleGeometry, *contactSlots, *solver, substepDt,
-                                        dimensions, bodies, pose, positions, velocities, response->status,
-                                        *controlSlots, sweptReports);
+        if (ccdImpactCapacity != 0)
+            AddSceneContinuousCollision(b, model, *collision, *particleGeometry, *contactSlots, *solver,
+                                        ccdImpactCapacity, stepSizes, dimensions, bodies, pose, positions, velocities,
+                                        response->status, *controlSlots, swept.slot);
         if (controlSlots) {
             if (!std::isfinite(sleep.quietTime) || sleep.quietTime <= 0.0f || !std::isfinite(sleep.pointVelocity) ||
                 sleep.pointVelocity < 0.0f)
@@ -1881,7 +1897,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         advance = b.Dispatch("fixed_substeps", "advance_substep", 1, {{5, place, RW}});
         advance.groupCountY = 1;
     }
-    if (multiple && response) {
+    if (response && (multiple || ccdImpactCapacity != 0)) {
         const auto width = uint64_t{nq} + 2 * uint64_t{nv};
         if (worldWords(width) > UINT32_MAX)
             throw std::length_error("inxphygpu fixed step checkpoint exceeds the device address range");
@@ -2184,13 +2200,13 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         schedule.begin.push_back(BindDispatch(std::move(dispatch), buffers));
     if (restoreActivity.kernel)
         schedule.restoreActivity = BindDispatch(std::move(restoreActivity), buffers);
+    if (restore.kernel)
+        schedule.restore = BindDispatch(std::move(restore), buffers);
     if (multiple) {
         if (drive.kernel)
             schedule.drive = BindDispatch(std::move(drive), buffers);
         if (advance.kernel)
             schedule.advance = BindDispatch(std::move(advance), buffers);
-        if (restore.kernel)
-            schedule.restore = BindDispatch(std::move(restore), buffers);
         schedule.clock = BindDispatch(std::move(clock), buffers);
     }
     FixedInputs fixedInputs{

@@ -31,6 +31,7 @@
 #include "inxphygpu/InxPhyGpuParticleExport.h"
 #include "inxphygpu/InxPhyGpuProgramSources.h"
 #include "inxphygpu/InxPhyGpuSceneRuntime.h"
+#include "inxphygpu/contact_report_layout.slang"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -1342,6 +1343,16 @@ bool PhysicsDomain::PublishInxPhyGpuFixed()
     if (!completed)
         return false;
     const auto row = completed->FindAcceptedWorld(admission.identity);
+    if (!row) {
+        const auto &id = admission.identity;
+        const auto attempted = std::find_if(completed->worlds.begin(), completed->worlds.end(), [&](const auto &world) {
+            return world.identity.worldId == id.worldId && world.identity.simulationEpoch == id.simulationEpoch &&
+                   world.attemptedFixedStepIndex == id.fixedStepIndex;
+        });
+        if (attempted != completed->worlds.end() &&
+            (attempted->status & physics::inxphygpu::SceneCcdImpactCapacityExceeded) != 0)
+            throw std::runtime_error("inxphygpu CCD exceeded the scene impact capacity");
+    }
     if (!row || completed->worlds[*row].status != 0)
         throw std::runtime_error("inxphygpu did not complete the admitted scene fixed step");
     auto publication = std::make_shared<physics::inxphygpu::InxPhyGpuFixedPublication>(std::move(*completed));

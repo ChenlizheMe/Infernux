@@ -7,14 +7,12 @@
 #include <cstdint>
 namespace infernux::physics::inxphygpu
 {
-inline constexpr uint32_t SceneCcdMaxImpacts = 32;
-inline constexpr uint32_t SceneCcdReportFlag = 4;
 inline constexpr uint32_t ContactReportUnknownSeparation = 1;
+inline constexpr uint32_t SceneCcdImpactCapacityExceeded = 32;
 }
 #else
-static const uint SceneCcdMaxImpacts = 32;
-static const uint SceneCcdReportFlag = 4;
 static const uint ContactReportUnknownSeparation = 1;
+static const uint SceneCcdImpactCapacityExceeded = 32;
 
 struct ContactReport
 {

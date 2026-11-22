@@ -10,6 +10,7 @@
 #include "scene_motion.slang"
 
 static const uint CcdLanes = 8;
+static const float CcdSolved = 1.0, CcdSkipped = 2.0, CcdExhausted = 3.0;
 
 struct SweepMotion
 {
@@ -21,7 +22,7 @@ struct SweepMotion
 
 [[vk::binding(8, 0)]] StructuredBuffer<ModelDimensions> ccdModel;
 [[vk::binding(9, 0)]] StructuredBuffer<BodyModel> ccdBodies;
-// First row holds dt, threshold, minimum rebound speed, filter parents.
+// First row holds impact capacity, threshold, minimum rebound speed, filter parents.
 // Body rows hold qpos, qvel, mode and inner radius.
 [[vk::binding(10, 0)]] StructuredBuffer<uint4> ccdTable;
 [[vk::binding(11, 0)]] RWStructuredBuffer<float> ccdPositions;
@@ -29,7 +30,7 @@ struct SweepMotion
 [[vk::binding(13, 0)]] StructuredBuffer<Pose> ccdStart;
 [[vk::binding(14, 0)]] RWStructuredBuffer<SweepMotion> ccdMotion;
 [[vk::binding(15, 0)]] RWStructuredBuffer<ContactReport> ccdReports;
-[[vk::binding(16, 0)]] StructuredBuffer<uint> ccdContactStatus;
+[[vk::binding(16, 0)]] RWStructuredBuffer<uint> ccdContactStatus;
 [[vk::binding(17, 0)]] StructuredBuffer<GeomModel> ccdGeoms;
 [[vk::binding(18, 0)]] StructuredBuffer<PrescribedMotion> ccdPrescribed;
 [[vk::binding(19, 0)]] StructuredBuffer<uint4> ccdRules;
@@ -38,9 +39,11 @@ struct SweepMotion
 [[vk::binding(22, 0)]] RWStructuredBuffer<uint> ccdHorizon;
 [[vk::binding(23, 0)]] RWStructuredBuffer<SceneBodyActivity> ccdActivity;
 [[vk::binding(24, 0)]] StructuredBuffer<uint> ccdFixedSteps;
+[[vk::binding(25, 0)]] StructuredBuffer<float> ccdTimeSteps;
 
 groupshared ShapeCastHit ccdHits[CcdLanes];
 groupshared uint ccdSelection;
+groupshared uint ccdImpactLimit;
 
 void syncSweepMotion()
 {
@@ -71,7 +74,7 @@ void prepare_scene_ccd(uint3 id : SV_DispatchThreadID)
     const uint index = id.y * size.state.z + id.x;
     const BodyModel body = ccdBodies[id.x];
     const Pose old = ccdStart[index];
-    const float dt = asfloat(ccdTable[0].x);
+    const float dt = ccdTimeSteps[id.y];
     SweepMotion motion = {float4(old.position.xyz + rotateVector(body.inertialPosition.xyz, old.rotation), 0.0),
                           old.rotation, float4(0.0), float4(0.0)};
     const uint4 row = ccdBodyRow(id.x);
@@ -103,7 +106,10 @@ void prepare_scene_ccd(uint3 id : SV_DispatchThreadID)
         }
     }
     if (id.x == 0)
-        motion.center.w = ccdContactStatus[id.y] != 0u ? 2.0 : 0.0;
+    {
+        motion.center.w = ccdContactStatus[id.y] != 0u ? CcdSkipped : 0.0;
+        motion.linear.w = dt;
+    }
     ccdMotion[index] = motion;
 }
 
@@ -279,18 +285,21 @@ void solveSceneCcd<let Report : bool>(uint lane, uint world)
 {
     const uint bodies = ccdModel[0].state.z;
     const uint base = world * bodies;
-    const uint reportBase = world * (SceneCcdMaxImpacts + 1u);
+    const uint reportBase = world * (ccdTable[0].x + 1u);
     if (lane == 0)
     {
         ccdSelection = ccdMotion[base].center.w != 0.0 ? 1u : 0u;
+        ccdImpactLimit = ccdTable[0].x;
         if (Report)
             ccdReports[reportBase].identity.x = 0u;
     }
     GroupMemoryBarrierWithGroupSync();
     if (workgroupUniformLoad(ccdSelection) != 0u)
         return;
-    float duration = asfloat(ccdTable[0].x);
-    for (uint impact = 0; impact < SceneCcdMaxImpacts; ++impact)
+    const uint capacity = workgroupUniformLoad(ccdImpactLimit);
+    float duration = ccdMotion[base].linear.w;
+    // Check the remaining interval once more after using the last record.
+    for (uint impact = 0; impact <= capacity; ++impact)
     {
         ccdHits[lane] = earliestLaneImpact(world, lane, duration, impact == 0);
         GroupMemoryBarrierWithGroupSync();
@@ -307,6 +316,12 @@ void solveSceneCcd<let Report : bool>(uint lane, uint world)
         const bool found = selection != 0u;
         if (!found && impact == 0)
             break;
+        if (found && impact == capacity)
+        {
+            if (lane == 0)
+                ccdMotion[base].center.w = CcdExhausted;
+            break;
+        }
         const ShapeCastHit earliest = ccdHits[found ? selection - 1u : 0u];
         const float advance = found ? earliest.normalDistance.w : duration;
         for (uint body = lane; body < bodies; body += CcdLanes)
@@ -327,7 +342,7 @@ void solveSceneCcd<let Report : bool>(uint lane, uint world)
                 ccdReports[reportBase + 1u + impact] = report;
                 ccdReports[reportBase].identity.x = impact + 1u;
             }
-            ccdMotion[base].center.w = 1.0;
+            ccdMotion[base].center.w = CcdSolved;
         }
         syncSweepMotion();
         GroupMemoryBarrierWithGroupSync();
@@ -354,7 +369,12 @@ void solve_scene_ccd_with_reports(uint lane : SV_GroupIndex, uint3 group : SV_Gr
 void publish_scene_ccd(uint3 id : SV_DispatchThreadID)
 {
     const ModelDimensions size = ccdModel[0];
-    if (id.x >= size.state.z || ccdMotion[id.y * size.state.z].center.w != 1.0)
+    if (id.x >= size.state.z)
+        return;
+    const float phase = ccdMotion[id.y * size.state.z].center.w;
+    if (id.x == 0 && phase == CcdExhausted)
+        ccdContactStatus[id.y] = SceneCcdImpactCapacityExceeded;
+    if (phase != CcdSolved)
         return;
     const uint4 row = ccdBodyRow(id.x);
     if (row.x == NoIndex)
