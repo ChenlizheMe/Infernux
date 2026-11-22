@@ -54,21 +54,10 @@ struct InxPhyGpuRegisteredWorld
     uint64_t simulationEpoch = 0;
 };
 
-/// Take an already published ordinary Scene into the native runtime. Rows use
-/// the registered author order and retain the completed GPU buffers.
-struct InxPhyGpuSceneMotionSeed
-{
-    ContactStreamIdentity identity;
-    float fixedTime;
-    PhysicsGpuPoseSource poses;
-    std::vector<PhysicsGpuBodyPoseBinding> bodies;
-};
-
 struct InxPhyGpuSceneSetup
 {
     InxPhyGpuSceneModel model;
     InxPhyGpuRegisteredWorld world;
-    std::optional<InxPhyGpuSceneMotionSeed> motion;
 };
 
 struct InxPhyGpuJointPoseTarget
@@ -215,8 +204,7 @@ class InxPhyGpuSceneRuntime final
                           float timestep, const ModelVector &gravity, InxPhyGpuCollisionCapacity collisionCapacity,
                           const InxPhyGpuContactSolver &solver, uint32_t commandCapacity, bool contactReports = false,
                           uint32_t substeps = 1, InxPhyGpuRayBatchLayout rayLayout = {},
-                          const InxPhyGpuFixedPublication *previous = nullptr,
-                          const InxPhyGpuSceneMotionSeed *acceptedMotion = nullptr);
+                          const InxPhyGpuFixedPublication *previous = nullptr);
     ~InxPhyGpuSceneRuntime();
     InxPhyGpuSceneRuntime(const InxPhyGpuSceneRuntime &) = delete;
     InxPhyGpuSceneRuntime &operator=(const InxPhyGpuSceneRuntime &) = delete;

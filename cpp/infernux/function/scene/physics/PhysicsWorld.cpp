@@ -4109,28 +4109,22 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
     using namespace physics::inxphygpu;
     RequireOwnerThread();
     auto &domain = *world.physics;
+    RequireHealthyStep(domain);
     const auto &clock = world.simulation;
     const ContactStreamIdentity identity{world.id, clock.simulationEpoch, clock.publishedFixedStepIndex};
     const auto accepted = previous ? previous->FindAcceptedWorld(identity) : std::nullopt;
-    if (domain.stepPending || (previous && !accepted))
-        throw std::logic_error("inxphygpu topology refresh requires the world's last accepted fixed publication");
+    if ((domain.stepPending &&
+         (domain.solverStarted || domain.fixedGpuPhase != PhysicsDomain::FixedGpuPhase::Solver)) ||
+        (previous ? !accepted : identity.fixedStepIndex != 0))
+        throw std::logic_error("inxphygpu topology requires the pre-solver boundary and its last native publication");
 
-    FlushAuthoring(domain);
     const auto &store = PhysicsECSStore::Instance();
-    if (store.HasPendingBodyCreations(world))
+    if (store.HasDirtyColliders(world) || store.HasPendingBodyCreations(world) ||
+        store.HasPendingBroadphaseAdds(world) || store.HasPendingBroadphaseRemoves(world) ||
+        store.HasPendingJointDependencies(world))
         return nullptr;
 
     auto setup = std::make_unique<InxPhyGpuSceneSetup>();
-    std::shared_ptr<const JoltGpuScene::Publication> source;
-    if (!previous && identity.fixedStepIndex != 0) {
-        if (domain.gpuRegistered && !domain.controlPending && !m_gpuScene->HasPendingControl(world))
-            source = m_gpuScene->GetPublished(world);
-        if (!source || source->worldId != identity.worldId || source->simulationEpoch != identity.simulationEpoch ||
-            source->fixedStepIndex != identity.fixedStepIndex || !source->isFixedStep)
-            throw std::logic_error("inxphygpu live scene import requires its sealed fixed publication");
-        setup->motion =
-            InxPhyGpuSceneMotionSeed{identity, static_cast<float>(clock.fixedTime), ScenePoseSource(*source), {}};
-    }
     auto &registration = setup->world;
     registration.worldId = world.id;
     registration.simulationEpoch = world.simulation.simulationEpoch;
@@ -4158,18 +4152,6 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
         registration.bodies.push_back(
             {id, binding.stagedShapeRevision, binding.actor, std::move(prepared.surfaces), bodyTarget});
         actors.push_back(std::move(prepared.actor));
-        if (source) {
-            auto &body = setup->motion->bodies.emplace_back(PhysicsGpuBodyPoseBinding{id, NoModelIndex});
-            const auto slot = source->directory->FindBodySlot(id);
-            if (slot >= source->bodyBase && slot - source->bodyBase < source->bodyCount &&
-                source->directory->residentBodies[slot]) {
-                const auto &old = *source->directory->actors[slot];
-                if (old.actor == binding.actor && old.shapeRevision == binding.stagedShapeRevision)
-                    body = {id,
-                            slot - source->bodyBase,
-                            {old.rootCenterOfMass.x, old.rootCenterOfMass.y, old.rootCenterOfMass.z}};
-            }
-        }
         for (const auto *joint : actor.owner->GetComponents<Joint>())
             if (joint->GetPhysicsConstraintId() != 0 && joint->m_boundBodyId == id)
                 activeJoints.push_back(joint);

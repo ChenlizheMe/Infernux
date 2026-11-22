@@ -283,8 +283,8 @@ class PhysicsWorld
     /// False retains the same epoch/step and its shared-source continuation.
     bool Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
     void ConfigureSceneBackend(RuntimeWorld &world, PhysicsBackend backend);
-    /// Compile registered topology at a fixed boundary. A live refresh uses
-    /// the last accepted publication's joint frames and hands off its state.
+    /// Compile registered topology for inxphyGPU before the solver starts. The caller
+    /// settles authoring first. A live refresh uses its last native publication.
     [[nodiscard]] std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneSetup>
     CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
                                const physics::inxphygpu::InxPhyGpuFixedPublication *previous = nullptr) const;

@@ -2028,27 +2028,12 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                            {4, snapshotSlot, W, true}});
     const auto residentSlots = b.slots.size();
     const auto residentPorts = b.ports.size();
-    const bool packMotion = handoff.motionSeed.has_value();
-    if (handoff.states || packMotion) {
+    if (handoff.states) {
         if (!controlSlots || handoff.addresses.size() != worldWords(nb))
             throw std::invalid_argument("inxphygpu topology handoff requires one mapping per controlled body");
-        auto source = positions;
-        if (packMotion) {
-            const auto &seed = *handoff.motionSeed;
-            if (worlds != 1 || seed.rows.size() != nb || !seed.poses.states ||
-                seed.poses.layout != PhysicsGpuPoseSource::Layout::CenterOfMassXYZW ||
-                seed.poses.rowBytes != 4 * sizeof(ModelVector))
-                throw std::invalid_argument("inxphygpu live scene import requires accepted COM motion and activity");
-            source = b.Slot(20 * uint64_t{nb});
-            const auto rows = b.Shared("sceneMotionSeed", seed.rows);
-            b.initialize.insert(
-                b.initialize.begin() + firstBodyPublication,
-                b.Dispatch("body_controls", "pack_accepted_motion", nb,
-                           {{0, dimensions, R}, {26, rows, R}, {17, positions, R}, {28, source, W, true}}));
-        }
         const auto addresses = b.Shared("topologyHandoff", handoff.addresses);
         // The frozen source is attached to this initialization dispatch below.
-        b.initialize.insert(b.initialize.begin() + firstBodyPublication + packMotion,
+        b.initialize.insert(b.initialize.begin() + firstBodyPublication,
                             b.Dispatch("body_controls", "import_body_states", nb,
                                        {{0, dimensions, R},
                                         {1, kinematics.bodies, R},
@@ -2062,7 +2047,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                         {19, controlSlots->fixedSteps, RW},
                                         {20, addresses, R},
                                         {23, controlSlots->activity, RW},
-                                        {17, source, R}}));
+                                        {17, positions, R}}));
         if (handoff.pendingWrenches)
             b.initialize.insert(b.initialize.begin() + firstBodyPublication + 1,
                                 b.Dispatch("body_controls", "import_pending_wrenches", nb,
@@ -2101,13 +2086,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     initialDispatches.reserve(b.initialize.size());
     for (auto &dispatch : b.initialize)
         initialDispatches.push_back(BindDispatch(std::move(dispatch), initializationBuffers));
-    if (packMotion) {
-        const auto &seed = *handoff.motionSeed;
-        auto &pack = initialDispatches[firstBodyPublication];
-        pack.buffers[2] = seed.poses.states;
-        pack.proof->reads[2] = {2, seed.poses.firstRow * seed.poses.rowBytes,
-                                uint64_t{seed.poses.bodyCount} * seed.poses.rowBytes};
-    } else if (handoff.states) {
+    if (handoff.states) {
         auto &importState = initialDispatches[firstBodyPublication];
         importState.buffers.back() = handoff.states;
         importState.proof->reads.back().byteSize = handoff.states->GetByteSize();
