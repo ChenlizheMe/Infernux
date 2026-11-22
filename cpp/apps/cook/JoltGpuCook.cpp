@@ -56,7 +56,7 @@ ShaderSourceModule LoadProgramSource(const std::filesystem::path &physics, JoltG
     case JoltGpuProgram::BodyCommands:
         return LoadModule(physics, "jph_gpu_body_commands", "gpu/Shaders/body_commands.slang");
     case JoltGpuProgram::Queries: {
-        auto source = LoadModule(physics, "jph_gpu_queries", "gpu/Shaders/rigid_queries.slang");
+        auto source = LoadModule(physics, "jph_gpu_particle_export", "gpu/Shaders/rigid_particle_export.slang");
         source.source += "\n#include \"../../infernux/renderer/particle/collision_export.slang\"\n";
         return source;
     }
@@ -95,7 +95,6 @@ std::vector<ShaderSourceModule> LoadProgramLibraries(const std::filesystem::path
             load("jph_gpu_convex_types", "gpu/ConvexGeometryTypes.h"),
             load("jph_gpu_convex", "gpu/Shaders/rigid_convex.slang"),
             load("jph_gpu_convex_manifold", "gpu/Shaders/rigid_convex_manifold.slang"),
-            load("jph_gpu_convex_queries", "gpu/Shaders/rigid_convex_queries.slang"),
             load("jph_gpu_contact_report_types", "gpu/ContactReportTypes.h"),
             load("jph_gpu_broadphase_types", "gpu/BroadphaseTypes.h"),
             load("jph_gpu_constraint_types", "gpu/ConstraintTypes.h"),

@@ -124,13 +124,6 @@ void select_body_bounds(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupInde
     }
 }
 
-ConvexGeometry overlapGeometry(CartesianFrame frame, CollisionShape shape)
-{
-    const float radius = shape.type.x == GeomBox ? shape.size.w : 0.0;
-    shape.size.xyz = max(float3(0.0), shape.size.xyz - radius);
-    return {frame, shape, 2.0 * radius, -1};
-}
-
 bool overlapConvex(ConvexGeometry first, ConvexGeometry second, float tolerance)
 {
     if (first.shape.type.x == GeomSphere && second.shape.type.x == GeomSphere)
@@ -182,7 +175,7 @@ bool overlapTriangleMesh(ConvexGeometry probe, CartesianFrame frame, CollisionSh
                     float4((a + b + c) / 3.0, 0.0), float4(a, 0.0), float4(b, 0.0), float4(c, 0.0)};
                 const CollisionShape triangle = {float4(0.0), uint4(GeomTriangle, 0, 0, 0)};
                 const float tolerance = 4.7683716e-7 * max(length(probeExtent), length(triangleFrame.position.xyz));
-                if (overlapConvex(probe, overlapGeometry(triangleFrame, triangle), tolerance))
+                if (overlapConvex(probe, queryConvexGeometry(triangleFrame, triangle), tolerance))
                     return true;
             }
         }
@@ -207,12 +200,12 @@ bool overlapLeaf(uint row, uint4 filter)
     const float3 targetExtent = bodyBoundExtent(targetFrame, target, bound.halfExtent.xyz);
     if (any(abs(offset) > probeExtent + targetExtent))
         return false;
-    const ConvexGeometry geometry = overlapGeometry(probeFrame, probe);
+    const ConvexGeometry geometry = queryConvexGeometry(probeFrame, probe);
     if (target.type.x == GeomTriangleMesh)
         return overlapTriangleMesh(geometry, targetFrame, target, probeExtent);
     // Use four float ULPs at the scale of the support points after rebasing.
     const float tolerance = 4.7683716e-7 * max(length(probeExtent), length(abs(offset) + targetExtent));
-    return overlapConvex(geometry, overlapGeometry(targetFrame, target), tolerance);
+    return overlapConvex(geometry, queryConvexGeometry(targetFrame, target), tolerance);
 }
 
 [shader("compute")]

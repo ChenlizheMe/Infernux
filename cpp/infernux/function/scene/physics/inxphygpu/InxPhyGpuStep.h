@@ -9,6 +9,7 @@
 #include "InxPhyGpuModel.h"
 
 #include <function/renderer/rhi/RhiComputeKernel.h>
+#include <functional>
 #include <variant>
 
 namespace infernux
@@ -114,13 +115,19 @@ struct InxPhyGpuPreparedBodyBounds
 
 enum InxPhyGpuGeometryType : uint32_t;
 
-struct InxPhyGpuOverlap
+struct InxPhyGpuQueryVolume
 {
     ModelPose pose;
     ModelVector size{};
     InxPhyGpuGeometryType type;
     uint32_t layers;
     bool triggers;
+};
+
+struct InxPhyGpuShapeCastHit
+{
+    InxPhyGpuRayHit surface;
+    ModelVector point; // World witness on the target, with numerical status in w.
 };
 
 struct InxPhyGpuDeviceRays
@@ -167,8 +174,13 @@ class InxPhyGpuPublishedRayQuery
                         uint32_t first, uint32_t end, bool closedMesh,
                         std::vector<rhi::ComputeBufferUpdate> updates) const;
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
-    PrepareOverlap(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, const InxPhyGpuOverlap &query,
+    PrepareOverlap(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, const InxPhyGpuQueryVolume &query,
                    std::vector<rhi::ComputeBufferUpdate> updates) const;
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareShapeCast(rhi::ComputeHost &host, ShaderCodeTarget target, const PhysicsGpuPoseSource &source,
+                     const InxPhyGpuQueryVolume &volume, const ModelVector &direction, float maximum,
+                     const std::vector<ModelWords> &exclusions, const std::function<uint32_t(uint32_t)> &bodyId,
+                     std::vector<rhi::ComputeBufferUpdate> updates) const;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Inputs() const noexcept
     {
         return m_inputs;
@@ -186,6 +198,7 @@ class InxPhyGpuPublishedRayQuery
     std::shared_ptr<rhi::ComputeBuffer> m_overlapRequest, m_overlapMask;
     rhi::ComputeDispatchDesc m_geometry, m_pack, m_project, m_traceAll;
     rhi::ComputeDispatchDesc m_selectBounds, m_closest, m_overlap;
+    mutable rhi::ComputeDispatchDesc m_shapeCast;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     mutable std::vector<rhi::ComputeDispatchDesc> m_initialize;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_output;

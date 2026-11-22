@@ -19,44 +19,6 @@ struct GpuParticleCollisionDevicePayload;
 [[nodiscard]] JoltGpuControlWork PrepareJoltGpuQueryWork(std::function<JoltGpuControlWork()> prepare,
                                                          std::exception_ptr &error);
 
-struct JoltGpuQueryResult
-{
-    std::shared_ptr<const JoltGpuScene::Publication> publication;
-    uint64_t numericalGeneration = 0;
-    // Buffer generation AND exact immutable ranges survive all query/export consumers.
-    std::shared_ptr<const JoltGpuGeometryLease> geometry;
-    std::shared_ptr<rhi::ComputeBuffer> hits;
-    // QuerySpan[queryCount] is the byte-zero prefix; the retained backing
-    // control also owns private CA and generic-job state.
-    std::shared_ptr<rhi::ComputeBuffer> spans;
-    std::shared_ptr<rhi::ComputeBuffer> summary;
-    uint32_t queryCount = 0;
-    uint32_t hitCapacity = 0;
-    std::shared_ptr<rhi::ComputeReadback> summaryReadback;
-    std::shared_ptr<rhi::PreparedComputeBatch> tailBatch;
-    JPH::GPU::QuerySummary summaryValue{};
-
-    [[nodiscard]] const std::vector<JPH::GPU::QueryHit> &ReadHits();
-
-  private:
-    friend class JoltGpuQueries;
-    void ReadSummary();
-    void Materialize();
-    uint32_t hitReadbackIndex = 0;
-    uint32_t spanReadbackIndex = 0;
-    bool knownCount = false;
-    bool headerComplete = false;
-    bool materialized = false;
-    bool recordsMaterialized = false;
-    std::vector<JPH::GPU::QueryHit> hostHits;
-};
-
-struct JoltGpuPreparedQuery
-{
-    std::shared_ptr<JoltGpuQueryResult> result;
-    JoltGpuControlWork work;
-};
-
 struct JoltGpuParticleExportRow
 {
     JPH::GPU::UInt4 selection;       // Shape row, previous row or UINT_MAX, generation low/high.
@@ -89,16 +51,11 @@ struct JoltGpuPreparedParticleExport
     JoltGpuControlWork work;
 };
 
-/// One compiler artifact, phase registry and source packet builder for all
-/// operations and typed families; no private query queue or CPU geometry path.
+/// Particle collision projection and grid publication from accepted GPU poses.
 class JoltGpuQueries final
 {
   public:
     JoltGpuQueries(rhi::ComputeHost &host, const ShaderTargetCode &target);
-    [[nodiscard]] JoltGpuPreparedQuery Prepare(std::shared_ptr<const JoltGpuScene::Publication> publication,
-                                               const std::vector<JPH::GPU::QueryInput> &queries,
-                                               uint64_t numericalGeneration, uint32_t castIterationQuantum = 32) const;
-
     [[nodiscard]] JoltGpuPreparedParticleExport
     PrepareParticleExport(const std::shared_ptr<const JoltGpuScene::Publication> &publication,
                           const std::vector<JoltGpuParticleExportRow> &rows,
@@ -106,14 +63,12 @@ class JoltGpuQueries final
                           uint64_t topologyRevision = 1) const;
 
   private:
-    struct Execution;
-    static JoltGpuControlWork Continue(const std::shared_ptr<Execution> &execution);
     struct Program
     {
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<uint8_t> ports;
     };
     rhi::ComputeHost m_host;
-    std::array<Program, 12> m_programs;
+    std::array<Program, 3> m_programs;
 };
 } // namespace infernux

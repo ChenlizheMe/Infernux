@@ -1,6 +1,7 @@
 #include "PhysicsWorld.h"
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/Factory.h>
+#include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include <Jolt/RegisterTypes.h>
 #include "../BoxCollider.h"
@@ -38,6 +39,7 @@
 #include "PhysicsMass.h"
 #include "PhysicsParticipantBodies.h"
 #include "PhysicsShapeAuthoring.h"
+#include "PhysicsShapeLeaves.h"
 #include "inxphygpu/InxPhyGpuProgramSources.h"
 #include "inxphygpu/InxPhyGpuSceneRuntime.h"
 #include <algorithm>
@@ -318,71 +320,68 @@ Float4 Rotation(const glm::quat &v)
     const auto q = glm::normalize(v);
     return {q.x, q.y, q.z, q.w};
 }
-QueryInput Query(uint32_t operation, uint32_t collector, uint32_t layers = UINT32_MAX, bool triggers = true)
-{
-    QueryInput request{};
-    request.meta = {operation, collector, ShapeSphere, 0};
-    request.filter = {layers, triggers ? 1u : 0u, 0, 0};
-    request.source.x = InvalidQueryBodySlot;
-    request.rotation.w = 1;
-    return request;
-}
 void ValidateRayInput(const glm::vec3 &origin, const glm::vec3 &direction, float maximum)
 {
     if (!Finite(origin) || !Finite(direction) || !std::isfinite(maximum) || maximum <= 0 || direction == glm::vec3(0))
         throw std::invalid_argument("Physics ray requires finite inputs, positive distance and nonzero direction");
 }
 
-void SetShapeCastPath(QueryInput &request, const glm::vec3 &origin, const glm::vec3 &direction, float maximum)
+physics::inxphygpu::InxPhyGpuQueryVolume QueryVolume(const JoltCpuQueries::Shape &shape, uint32_t layers, bool triggers)
 {
-    ValidateRayInput(origin, direction, maximum);
-    request.positionMaximum = {origin.x, origin.y, origin.z, maximum};
-    request.direction = {direction.x, direction.y, direction.z, 0.0f};
+    using namespace physics::inxphygpu;
+    return std::visit(
+        [&](const auto &primitive) {
+            using Type = std::decay_t<decltype(primitive)>;
+            InxPhyGpuQueryVolume native{{{0, 0, 0, 0}, {1, 0, 0, 0}}, {}, Sphere, layers, triggers};
+            glm::vec3 center;
+            if constexpr (std::is_same_v<Type, JoltCpuQueries::Box>) {
+                center = primitive.center;
+                const auto half = Vector(primitive.halfExtents);
+                if (half.x <= 0 || half.y <= 0 || half.z <= 0)
+                    throw std::invalid_argument("Physics query box requires positive finite half extents");
+                const auto rotation = Rotation(primitive.rotation);
+                native.pose.rotation = {rotation.w, rotation.x, rotation.y, rotation.z};
+                native.size = {half.x, half.y, half.z, std::min({0.05f, half.x, half.y, half.z})};
+                native.type = Box;
+            } else {
+                if (!std::isfinite(primitive.radius) || primitive.radius <= 0)
+                    throw std::invalid_argument("Physics query requires a positive finite radius");
+                native.size[0] = primitive.radius;
+                if constexpr (std::is_same_v<Type, JoltCpuQueries::Sphere>) {
+                    center = primitive.center;
+                } else {
+                    (void)Vector(primitive.point0);
+                    (void)Vector(primitive.point1);
+                    const auto a = glm::dvec3(primitive.point0), b = glm::dvec3(primitive.point1);
+                    center = glm::vec3((a + b) * 0.5);
+                    const auto delta = b - a;
+                    const double radial = std::hypot(delta.x, delta.y);
+                    const double halfLength = std::hypot(radial, delta.z) * 0.5;
+                    if (halfLength > std::numeric_limits<float>::max())
+                        throw std::invalid_argument("Physics query capsule length exceeds device coordinates");
+                    if (halfLength > 0.0) {
+                        const double angle = 0.5 * std::atan2(radial, delta.z);
+                        const double scale = radial > 0.0 ? std::sin(angle) / radial : 0.0;
+                        // The native capsule runs along +Z.
+                        native.pose.rotation =
+                            radial == 0.0 && delta.z < 0.0
+                                ? ModelVector{0, 1, 0, 0}
+                                : ModelVector{static_cast<float>(std::cos(angle)), static_cast<float>(-delta.y * scale),
+                                              static_cast<float>(delta.x * scale), 0};
+                        native.size[1] = static_cast<float>(halfLength);
+                        native.type = Capsule;
+                    }
+                }
+            }
+            (void)Vector(center);
+            native.pose.position = {center.x, center.y, center.z, 0};
+            return native;
+        },
+        shape);
 }
-void QuerySphereInput(QueryInput &request, const glm::vec3 &center, float radius)
-{
-    request.positionMaximum = Vector(center);
-    if (!std::isfinite(radius) || radius <= 0)
-        throw std::invalid_argument("Physics query sphere requires a positive finite radius");
-    request.meta.z = ShapeSphere;
-    request.geometry = {0, 0, 0, radius};
-}
-void QueryBoxInput(QueryInput &request, const glm::vec3 &center, const glm::vec3 &halfExtents,
-                   const glm::quat &rotation)
-{
-    request.positionMaximum = Vector(center);
-    const auto half = Vector(halfExtents);
-    if (half.x <= 0 || half.y <= 0 || half.z <= 0)
-        throw std::invalid_argument("Physics query box requires positive finite half extents");
-    request.meta.z = ShapeBox;
-    request.geometry = {half.x, half.y, half.z, std::min(0.05f, std::min({half.x, half.y, half.z}))};
-    request.rotation = Rotation(rotation);
-}
-void QueryCapsuleInput(QueryInput &request, const glm::vec3 &a, const glm::vec3 &b, float radius)
-{
-    (void)Vector(a);
-    (void)Vector(b);
-    const glm::dvec3 delta = glm::dvec3(b) - glm::dvec3(a);
-    const double radial = std::hypot(delta.x, delta.z);
-    const double length = std::hypot(radial, delta.y);
-    const auto center = glm::vec3((glm::dvec3(a) + glm::dvec3(b)) * 0.5);
-    QuerySphereInput(request, center, radius);
-    if (length == 0)
-        return;
-    if (length * 0.5 > std::numeric_limits<float>::max())
-        throw std::invalid_argument("Physics query capsule length exceeds device coordinates");
-    request.meta.z = ShapeCapsule;
-    request.geometry.y = static_cast<float>(length * 0.5);
-    const double halfAngle = std::atan2(radial, delta.y) * 0.5;
-    const double sine = std::sin(halfAngle);
-    request.rotation =
-        radial > 0    ? Float4{static_cast<float>(delta.z / radial * sine), 0,
-                            static_cast<float>(-delta.x / radial * sine), static_cast<float>(std::cos(halfAngle))}
-        : delta.y > 0 ? Float4{0, 0, 0, 1}
-                      : Float4{1, 0, 0, 0};
-}
-std::optional<QueryInput> CookBoxSweep(const BoxCollider &collider, const glm::vec3 &position,
-                                       const glm::quat &rotation)
+
+std::optional<physics::inxphygpu::InxPhyGpuQueryVolume>
+CookBoxSweep(const BoxCollider &collider, const glm::vec3 &position, const glm::quat &rotation, uint32_t layers)
 {
     (void)Vector(position);
     const auto q = Rotation(rotation);
@@ -390,22 +389,23 @@ std::optional<QueryInput> CookBoxSweep(const BoxCollider &collider, const glm::v
     const auto shape = collider.CreateJoltShape();
     if (!shape)
         throw std::runtime_error("Collider geometry is not ready for an explicit geometry query");
-    const auto prepared = PrepareJoltGpuShape(*shape, 1);
-    if (prepared.leaves.empty())
+    const auto leaves = CollectPhysicsShapeLeaves(*shape, 1);
+    if (leaves.empty())
         return std::nullopt;
-    const auto &leaf = prepared.leaves.front().model;
+    const auto &leaf = leaves.front().shape;
+    const auto &box = static_cast<const JPH::BoxShape &>(*leaf.mShape);
     const glm::quat world(q.w, q.x, q.y, q.z);
-    const glm::quat local(leaf.localRotation.w, leaf.localRotation.x, leaf.localRotation.y, leaf.localRotation.z);
-    const auto center = position + world * (glm::vec3(prepared.centerOfMass.GetX(), prepared.centerOfMass.GetY(),
-                                                      prepared.centerOfMass.GetZ()) +
-                                            Vector(leaf.localPositionCOM));
-    QueryInput result{};
-    result.meta.z = leaf.meta.x;
-    result.geometry = leaf.geometry;
-    result.positionMaximum = Vector(center);
-    result.rotation = Rotation(world * local);
+    const glm::quat local(leaf.mShapeRotation.GetW(), leaf.mShapeRotation.GetX(), leaf.mShapeRotation.GetY(),
+                          leaf.mShapeRotation.GetZ());
+    const auto offset = leaf.mShapePositionCOM + shape->GetCenterOfMass();
+    const auto center = position + world * glm::vec3(offset.GetX(), offset.GetY(), offset.GetZ());
+    const auto half = box.GetHalfExtent();
+    auto result =
+        QueryVolume(JoltCpuQueries::Box{center, {half.GetX(), half.GetY(), half.GetZ()}, world * local}, layers, false);
+    result.size[3] = box.GetConvexRadius();
     return result;
 }
+
 struct AdmissionScope
 {
     explicit AdmissionScope(JoltGpuScene &scene, RuntimeWorld &world)
@@ -2199,106 +2199,10 @@ void PhysicsWorld::ObserveSpatialGpuQuery(PhysicsDomain &domain,
     m_gpuScene->RunPublicationObservation(domain.owner, publication, std::move(prepared));
 }
 
-std::shared_ptr<JoltGpuQueryResult>
-PhysicsWorld::RunQuery(PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
-                       const std::vector<QueryInput> &requests, uint64_t sweepColliderId,
-                       uint64_t sweepColliderGeneration, uint32_t sweepBodyId) const
-{
-    JoltGpuPreparedQuery prepared;
-    std::exception_ptr requestError;
-    ObserveSpatialGpuQuery(domain, publication, [&](const auto &accepted) {
-        return PrepareJoltGpuQueryWork(
-            [&] {
-                const auto *inputs = &requests;
-                std::vector<QueryInput> sweepInputs;
-                if (sweepColliderId) {
-                    sweepInputs = requests;
-                    const auto &directory = *accepted->directory;
-                    const auto slot = directory.FindBodySlot(sweepBodyId);
-                    const auto &actors = directory.actors;
-                    const bool acceptedSelf = slot >= accepted->bodyBase &&
-                                              slot - accepted->bodyBase < accepted->bodyCount &&
-                                              std::any_of(
-                                                  actors[slot]->leaves.begin(), actors[slot]->leaves.end(),
-                                                  [&](const auto &leaf) {
-                                                      return leaf.colliderId == sweepColliderId &&
-                                                             leaf.colliderGeneration == sweepColliderGeneration;
-                                                  });
-                    for (auto &input : sweepInputs) {
-                        input.meta.w |= QuerySweepPairPolicy;
-                        input.lifetime = {static_cast<uint32_t>(sweepColliderGeneration),
-                                          static_cast<uint32_t>(sweepColliderGeneration >> 32), 0, 0};
-                        if (acceptedSelf) {
-                            input.source.x = slot;
-                            input.meta.w |= QueryExcludeBody;
-                        }
-                    }
-                    inputs = &sweepInputs;
-                }
-                prepared =
-                    m_gpuQueries->Prepare(accepted, *inputs, domain.queryGeneration.load(std::memory_order_acquire));
-                return std::move(prepared.work);
-            },
-            requestError);
-    });
-    if (requestError)
-        std::rethrow_exception(requestError);
-    return std::move(prepared.result);
-}
-
 std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, const JoltCpuQueries::Shape &shape,
                                                      uint32_t layers, bool triggers) const
 {
-    using namespace physics::inxphygpu;
-    const auto request = std::visit(
-        [&](const auto &primitive) {
-            using Type = std::decay_t<decltype(primitive)>;
-            InxPhyGpuOverlap native{{{0, 0, 0, 0}, {1, 0, 0, 0}}, {}, Sphere, layers, triggers};
-            glm::vec3 center;
-            if constexpr (std::is_same_v<Type, JoltCpuQueries::Box>) {
-                center = primitive.center;
-                const auto half = Vector(primitive.halfExtents);
-                if (half.x <= 0 || half.y <= 0 || half.z <= 0)
-                    throw std::invalid_argument("Physics query box requires positive finite half extents");
-                const auto rotation = Rotation(primitive.rotation);
-                native.pose.rotation = {rotation.w, rotation.x, rotation.y, rotation.z};
-                native.size = {half.x, half.y, half.z, std::min({0.05f, half.x, half.y, half.z})};
-                native.type = Box;
-            } else {
-                if (!std::isfinite(primitive.radius) || primitive.radius <= 0)
-                    throw std::invalid_argument("Physics query requires a positive finite radius");
-                native.size[0] = primitive.radius;
-                if constexpr (std::is_same_v<Type, JoltCpuQueries::Sphere>) {
-                    center = primitive.center;
-                } else {
-                    (void)Vector(primitive.point0);
-                    (void)Vector(primitive.point1);
-                    const auto a = glm::dvec3(primitive.point0), b = glm::dvec3(primitive.point1);
-                    center = glm::vec3((a + b) * 0.5);
-                    const auto delta = b - a;
-                    const double radial = std::hypot(delta.x, delta.y);
-                    const double halfLength = std::hypot(radial, delta.z) * 0.5;
-                    if (halfLength > std::numeric_limits<float>::max())
-                        throw std::invalid_argument("Physics query capsule length exceeds device coordinates");
-                    if (halfLength > 0.0) {
-                        const double angle = 0.5 * std::atan2(radial, delta.z);
-                        const double scale = radial > 0.0 ? std::sin(angle) / radial : 0.0;
-                        // The native capsule runs along +Z.
-                        native.pose.rotation =
-                            radial == 0.0 && delta.z < 0.0
-                                ? ModelVector{0, 1, 0, 0}
-                                : ModelVector{static_cast<float>(std::cos(angle)), static_cast<float>(-delta.y * scale),
-                                              static_cast<float>(delta.x * scale), 0};
-                        native.size[1] = static_cast<float>(halfLength);
-                        native.type = Capsule;
-                    }
-                }
-            }
-            (void)Vector(center);
-            native.pose.position = {center.x, center.y, center.z, 0};
-            return native;
-        },
-        shape);
+    const auto request = QueryVolume(shape, layers, triggers);
     SealSpatialQuery(domain);
     if (domain.cpuScene)
         return JoltCpuQueries(*domain.cpuScene).Overlap(shape, {layers, triggers});
@@ -2323,7 +2227,8 @@ std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, cons
     if (replacement)
         domain.sceneRays = std::move(replacement);
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    for (const auto row : ReadInxPhyGpuSelection(*result, static_cast<uint32_t>(plan->surfaces.size())))
+    for (const auto row :
+         physics::inxphygpu::ReadInxPhyGpuSelection(*result, static_cast<uint32_t>(plan->surfaces.size())))
         if (auto *collider = plan->surfaces[row].target.GetCollider())
             colliders.push_back(collider);
     std::sort(colliders.begin(), colliders.end(),
@@ -2332,48 +2237,88 @@ std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, cons
     return colliders;
 }
 
-bool PhysicsWorld::QueryClosestCast(PhysicsDomain &domain, const QueryInput &request,
-                                    const JoltCpuQueries::Shape &shape, RaycastHit &hit) const
+bool PhysicsWorld::QueryClosestCast(PhysicsDomain &domain, const JoltCpuQueries::Shape &shape,
+                                    const glm::vec3 &direction, float maximum, RaycastHit &hit, uint32_t layers,
+                                    bool triggers) const
 {
+    const auto volume = QueryVolume(shape, layers, triggers);
+    ValidateRayInput({volume.pose.position[0], volume.pose.position[1], volume.pose.position[2]}, direction, maximum);
     SealSpatialQuery(domain);
-    hit = {};
     if (domain.cpuScene)
-        return JoltCpuQueries(*domain.cpuScene)
-            .Cast(shape, Vector(request.direction), request.positionMaximum.w, hit,
-                  {request.filter.x, request.filter.y != 0});
-    if (const auto gpu = ReadGpuSpatialQueryPublication(domain)) {
-        const auto result = RunQuery(domain, gpu, {request});
-        FrameWorkOwner::Scope materialize(*m_gpuWork);
-        hit = DecodeQueryHit(*result, result->ReadHits().front());
-    }
-    return hit.bodyId != UINT32_MAX;
+        return JoltCpuQueries(*domain.cpuScene).Cast(shape, direction, maximum, hit, {layers, triggers});
+    return RunGpuShapeCast(domain, volume, direction, maximum, hit);
 }
 
-RaycastHit PhysicsWorld::DecodeQueryHit(const JoltGpuQueryResult &result, const QueryHit &record) const
+bool PhysicsWorld::RunGpuShapeCast(PhysicsDomain &domain, const physics::inxphygpu::InxPhyGpuQueryVolume &volume,
+                                   const glm::vec3 &direction, float maximum, RaycastHit &hit,
+                                   const BoxCollider *swept) const
 {
-    RaycastHit hit;
-    if (!record.meta.y)
-        return hit;
-    const auto &publication = *result.publication;
-    if (record.meta.x >= publication.directory->actors.size() || !publication.directory->actors[record.meta.x] ||
-        record.meta.z >= publication.directory->leaves.size())
-        throw std::runtime_error("GPU query address is absent from its retained publication");
-    const auto &identity = *publication.directory->actors[record.meta.x];
-    const auto &address = publication.directory->leaves[record.meta.z];
-    if (address.bodySlot != record.meta.x || address.actorLeaf >= identity.leaves.size())
-        throw std::runtime_error("GPU query leaf belongs to a different published actor");
-    const auto &leaf = identity.leaves[address.actorLeaf];
-    hit.bodyId = identity.bodyId;
-    hit.subShapeId = leaf.subShapeId;
-    hit.point = Vector(record.positionDistance);
-    hit.normal = Vector(record.normalFraction);
-    hit.distance = record.positionDistance.w;
-    hit.target = leaf.surfaceTarget;
-    hit.collider = leaf.surfaceTarget.GetCollider();
-    hit.gameObject = leaf.surfaceTarget.GetGameObject();
-    hit.gameObjectId = leaf.surfaceGameObjectId;
-    hit.colliderId = leaf.colliderId;
-    return hit;
+    using namespace physics::inxphygpu;
+    hit = {};
+    const auto gpu = ReadGpuSpatialQueryPublication(domain);
+    if (!gpu || !volume.layers)
+        return false;
+    const glm::dvec3 delta(direction);
+    const auto unit = glm::vec3(delta / std::hypot(delta.x, delta.y, delta.z));
+    const ModelVector motion{unit.x, unit.y, unit.z, swept ? 1.0e-3f : 0.0f};
+    std::unique_ptr<PhysicsSceneRayPlan> replacement;
+    auto *plan = domain.sceneRays.get();
+    std::shared_ptr<rhi::PreparedComputeBatch> result;
+    std::exception_ptr requestError;
+    ObserveSpatialGpuQuery(domain, gpu, [&](const auto &accepted) {
+        return PrepareJoltGpuQueryWork(
+            [&]() -> JoltGpuControlWork {
+                std::vector<rhi::ComputeBufferUpdate> uploads;
+                const auto target = PhysicsShaderTarget(*m_gpuHost);
+                if (!plan || !plan->Matches(*accepted)) {
+                    auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, plan ? plan->query.Capacity() : 64);
+                    replacement = std::move(prepared.first);
+                    uploads = std::move(prepared.second);
+                    plan = replacement.get();
+                }
+                std::vector<ModelWords> exclusions;
+                if (swept) {
+                    const auto self = std::pair{swept->GetComponentID(), swept->GetLifetimeGeneration()};
+                    const auto ownRange = plan->colliderGeometry.find(self);
+                    const auto ownBody = ownRange == plan->colliderGeometry.end()
+                                             ? UINT32_MAX
+                                             : plan->surfaces[ownRange->second.first].bodyId;
+                    const auto object = swept->GetGameObject()->GetID();
+                    const auto pairs = CaptureColliderPairs(domain);
+                    exclusions.resize((plan->surfaces.size() + 127) / 128);
+                    for (const auto &[key, range] : plan->colliderGeometry) {
+                        const auto &surface = plan->surfaces[range.first];
+                        const bool ownsBody = ownBody != UINT32_MAX && surface.bodyId == ownBody;
+                        const bool sameObject = surface.gameObjectId == object;
+                        const auto [first, second] = std::minmax(self, key);
+                        const PhysicsColliderPair pair{first.first, first.second, second.first, second.second};
+                        const bool ignored = std::binary_search(pairs->begin(), pairs->end(), pair);
+                        if (ownsBody || sameObject || ignored)
+                            for (uint32_t row = range.first; row < range.second; ++row)
+                                exclusions[row / 128][(row / 32) % 4] |= uint32_t{1} << (row % 32);
+                    }
+                }
+                result = plan->query.PrepareShapeCast(
+                    *m_gpuHost, target, ScenePoseSource(*accepted), volume, motion, maximum, exclusions,
+                    [plan](uint32_t row) { return plan->surfaces[row].bodyId; }, std::move(uploads));
+                return {result};
+            },
+            requestError);
+    });
+    if (requestError)
+        std::rethrow_exception(requestError);
+    if (replacement)
+        domain.sceneRays = std::move(replacement);
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    InxPhyGpuShapeCastHit record;
+    result->Readback(0)->ReadInto(&record, sizeof(record));
+    if (record.point[3] != 0.0f)
+        throw std::runtime_error("inxphygpu shape cast did not converge");
+    const InxPhyGpuRay path{volume.pose.position, motion, {}};
+    if (!DecodeSceneRayHit(*plan, path, record.surface, hit))
+        return false;
+    hit.point = {record.point[0], record.point[1], record.point[2]};
+    return true;
 }
 
 bool PhysicsWorld::CanStageNewGpuBody(PhysicsDomain &domain, size_t count)
@@ -4695,21 +4640,15 @@ std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 
 bool PhysicsWorld::SphereCast(const glm::vec3 &center, float radius, const glm::vec3 &direction, float maximum,
                               RaycastHit &hit, uint32_t layers, bool triggers) const
 {
-    auto &domain = CurrentDomain();
-    auto request = Query(QueryShapeCast, QueryClosest, layers, triggers);
-    QuerySphereInput(request, center, radius);
-    SetShapeCastPath(request, center, direction, maximum);
-    return QueryClosestCast(domain, request, JoltCpuQueries::Sphere{center, radius}, hit);
+    return QueryClosestCast(CurrentDomain(), JoltCpuQueries::Sphere{center, radius}, direction, maximum, hit, layers,
+                            triggers);
 }
 bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::vec3 &direction,
                            const glm::quat &rotation, float maximum, RaycastHit &hit, uint32_t layers,
                            bool triggers) const
 {
-    auto &domain = CurrentDomain();
-    auto request = Query(QueryShapeCast, QueryClosest, layers, triggers);
-    QueryBoxInput(request, center, halfExtents, rotation);
-    SetShapeCastPath(request, center, direction, maximum);
-    return QueryClosestCast(domain, request, JoltCpuQueries::Box{center, halfExtents, rotation}, hit);
+    return QueryClosestCast(CurrentDomain(), JoltCpuQueries::Box{center, halfExtents, rotation}, direction, maximum,
+                            hit, layers, triggers);
 }
 bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
                             const glm::vec3 &displacement, RaycastHit &hit) const
@@ -4719,52 +4658,26 @@ bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, c
     (void)Vector(position);
     (void)Rotation(rotation);
     (void)Vector(displacement);
-    const double distance =
-        std::hypot(std::hypot(double(displacement.x), double(displacement.y)), double(displacement.z));
+    const double distance = std::hypot(double(displacement.x), double(displacement.y), double(displacement.z));
     hit = {};
-    if (!box.GetGameObject() || distance == 0)
+    const auto *object = box.GetGameObject();
+    if (!object || distance == 0)
         return false;
     if (distance > std::numeric_limits<float>::max())
         throw std::invalid_argument("BoxCollider sweep displacement exceeds device coordinates");
     SealSpatialQuery(domain);
     if (domain.cpuScene)
         return JoltCpuQueries(*domain.cpuScene).SweepBox(box, position, rotation, displacement, hit);
-    const auto gpu = ReadGpuSpatialQueryPublication(domain);
-    auto *object = box.GetGameObject();
-    if (!object)
-        return false;
     const auto layers = TagLayerManager::Instance().GetLayerCollisionMask(object->GetLayer());
-    auto request = Query(QueryShapeCast, QueryClosest, layers, false);
-    if (gpu) {
-        const auto primitive = CookBoxSweep(box, position, rotation);
-        if (!primitive)
-            return false;
-        const auto colliderId = box.GetComponentID(), objectId = object->GetID();
-        request.meta.z = primitive->meta.z;
-        request.meta.w = QuerySweepPolicy;
-        request.geometry = primitive->geometry;
-        request.rotation = primitive->rotation;
-        SetShapeCastPath(request, Vector(primitive->positionMaximum), displacement, static_cast<float>(distance));
-        request.source.z = static_cast<uint32_t>(objectId);
-        request.source.w = static_cast<uint32_t>(objectId >> 32);
-        request.filter.z = static_cast<uint32_t>(colliderId);
-        request.filter.w = static_cast<uint32_t>(colliderId >> 32);
-        const auto result =
-            RunQuery(domain, gpu, {request}, colliderId, box.GetLifetimeGeneration(), ColliderBodyIdentity(box));
-        FrameWorkOwner::Scope materialize(*m_gpuWork);
-        hit = DecodeQueryHit(*result, result->ReadHits().front());
-    }
-    return hit.bodyId != UINT32_MAX;
+    const auto volume = CookBoxSweep(box, position, rotation, layers);
+    return volume && RunGpuShapeCast(domain, *volume, displacement, static_cast<float>(distance), hit, &box);
 }
 
 bool PhysicsWorld::CapsuleCast(const glm::vec3 &a, const glm::vec3 &b, float radius, const glm::vec3 &direction,
                                float maximum, RaycastHit &hit, uint32_t layers, bool triggers) const
 {
-    auto &domain = CurrentDomain();
-    auto request = Query(QueryShapeCast, QueryClosest, layers, triggers);
-    QueryCapsuleInput(request, a, b, radius);
-    SetShapeCastPath(request, Vector(request.positionMaximum), direction, maximum);
-    return QueryClosestCast(domain, request, JoltCpuQueries::Capsule{a, b, radius}, hit);
+    return QueryClosestCast(CurrentDomain(), JoltCpuQueries::Capsule{a, b, radius}, direction, maximum, hit, layers,
+                            triggers);
 }
 std::shared_ptr<const PhysicsShapeGeometry>
 PhysicsWorld::ResolveShapeGeometry(PhysicsDomain &domain, const JoltGpuScene::PublishedLeaf &leaf) const

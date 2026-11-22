@@ -154,3 +154,10 @@ ConvexSupportPoint convexSupport(ConvexGeometry geometry, float3 direction, Stru
         result.point += margin * direction;
     return result;
 }
+
+ConvexGeometry queryConvexGeometry(CartesianFrame frame, CollisionShape shape)
+{
+    const float radius = shape.type.x == GeomBox ? shape.size.w : 0.0;
+    shape.size.xyz = max(float3(0.0), shape.size.xyz - radius);
+    return {frame, shape, 2.0 * radius, -1};
+}

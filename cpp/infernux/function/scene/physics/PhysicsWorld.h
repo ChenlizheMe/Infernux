@@ -51,7 +51,6 @@ class JoltGpuScene;
 class JoltGpuQueries;
 class JoltCpuQueries;
 class JoltGpuJoints;
-struct JoltGpuQueryResult;
 struct PhysicsGpuMotionRead;
 struct PhysicsGpuMotionExport;
 struct PreparedCpuActor;
@@ -70,6 +69,7 @@ namespace physics::inxphygpu
 {
 struct InxPhyGpuSceneSetup;
 struct InxPhyGpuFixedPublication;
+struct InxPhyGpuQueryVolume;
 struct InxPhyGpuRay;
 struct InxPhyGpuDeviceRays;
 struct InxPhyGpuPreparedRayBatch;
@@ -903,10 +903,6 @@ class PhysicsWorld
     ReadGpuSpatialQueryPublication(PhysicsDomain &) const;
     void ObserveSpatialGpuQuery(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
                                 const JoltGpuScene::Consumer &) const;
-    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult>
-    RunQuery(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
-             const std::vector<JPH::GPU::QueryInput> &, uint64_t sweepColliderId = 0,
-             uint64_t sweepColliderGeneration = 0, uint32_t sweepBodyId = UINT32_MAX) const;
     [[nodiscard]] physics::inxphygpu::InxPhyGpuPreparedRayBatch
     RunGpuRays(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
                const std::vector<physics::inxphygpu::InxPhyGpuRay> &, const physics::inxphygpu::InxPhyGpuDeviceRays *,
@@ -917,8 +913,11 @@ class PhysicsWorld
     void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output, uint32_t kind) const;
     [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &, const JoltCpuQueries::Shape &,
                                                          uint32_t layers, bool triggers) const;
-    [[nodiscard]] bool QueryClosestCast(PhysicsDomain &, const JPH::GPU::QueryInput &, const JoltCpuQueries::Shape &,
-                                        RaycastHit &) const;
+    [[nodiscard]] bool QueryClosestCast(PhysicsDomain &, const JoltCpuQueries::Shape &, const glm::vec3 &direction,
+                                        float maximum, RaycastHit &, uint32_t layers, bool triggers) const;
+    [[nodiscard]] bool RunGpuShapeCast(PhysicsDomain &, const physics::inxphygpu::InxPhyGpuQueryVolume &,
+                                       const glm::vec3 &direction, float maximum, RaycastHit &,
+                                       const BoxCollider *swept = nullptr) const;
     [[nodiscard]] std::vector<Rigidbody *>
     QueryRigidbodyCandidatesInBounds(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
                                      const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layers,
@@ -927,7 +926,6 @@ class PhysicsWorld
     GatherRigidbodyStateRows(const std::vector<Rigidbody *> &, PhysicsStateFields, bool includeBoxes, bool triggers,
                              const std::vector<PhysicsDeviceQueryOutput> &, bool sealed,
                              const std::shared_ptr<const JoltGpuScene::Publication> &) const;
-    [[nodiscard]] RaycastHit DecodeQueryHit(const JoltGpuQueryResult &result, const JPH::GPU::QueryHit &record) const;
     [[nodiscard]] bool CanQueueRigidbodyCommand(uint32_t bodyId, const Rigidbody &) const;
     [[nodiscard]] Backend SelectBodyBackend(const PhysicsActorData &, const BodyRegistration *) const;
     [[nodiscard]] bool NeedsBodyBindingChange(const PhysicsActorData &) const;

@@ -26,6 +26,7 @@ constexpr auto W = Access::Write;
 constexpr auto RW = Access::ReadWrite;
 static_assert(sizeof(InxPhyGpuRay) == 48);
 static_assert(sizeof(InxPhyGpuRayHit) == 32);
+static_assert(sizeof(InxPhyGpuShapeCastHit) == 48);
 static_assert(sizeof(InxPhyGpuBodyCommand) == 48);
 static_assert(sizeof(ModelJointVectors) == 32);
 static_assert(sizeof(ModelWords) == 16 && sizeof(ModelVector) == 16);
@@ -2125,7 +2126,7 @@ InxPhyGpuPublishedRayQuery::PrepareClosestPoint(rhi::ComputeHost &host, const Ph
 
 std::shared_ptr<rhi::PreparedComputeBatch>
 InxPhyGpuPublishedRayQuery::PrepareOverlap(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
-                                           const InxPhyGpuOverlap &query,
+                                           const InxPhyGpuQueryVolume &query,
                                            std::vector<rhi::ComputeBufferUpdate> updates) const
 {
     const ModelWords settings{m_geometryCount, 0, 0, static_cast<uint32_t>(source.firstRow)};
@@ -2142,6 +2143,82 @@ InxPhyGpuPublishedRayQuery::PrepareOverlap(rhi::ComputeHost &host, const Physics
     dispatches.push_back(m_overlap);
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches),
                                     {{m_overlapMask, 0, m_overlapMask->GetByteSize()}});
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuPublishedRayQuery::PrepareShapeCast(
+    rhi::ComputeHost &host, ShaderCodeTarget target, const PhysicsGpuPoseSource &source,
+    const InxPhyGpuQueryVolume &volume, const ModelVector &direction, float maximum,
+    const std::vector<ModelWords> &exclusions, const std::function<uint32_t(uint32_t)> &bodyId,
+    std::vector<rhi::ComputeBufferUpdate> updates) const
+{
+    struct Parameters
+    {
+        ModelPose originLimit;
+        ModelVector size, direction;
+        ModelWords filter;
+    };
+    Parameters request{volume.pose,
+                       volume.size,
+                       direction,
+                       {m_geometryCount, volume.layers,
+                        static_cast<uint32_t>(volume.triggers) | (exclusions.empty() ? 0u : 2u), volume.type}};
+    request.originLimit.position[3] = maximum;
+    if (!m_shapeCast.kernel) {
+        constexpr uint32_t workers = 16, records = 2 * 101 + 1158, horizon = 512;
+        const auto allocate = [&](uint64_t words, BufferUsageFlags usage = BufferUsageFlags::None) {
+            auto buffer = ComputeBuffer::TryCreatePrivate(host, {words, ComputeScalarType::UInt32, 1, usage});
+            if (!buffer)
+                throw std::runtime_error("Could not allocate inxphygpu shape cast storage");
+            return buffer;
+        };
+        // Stable body IDs follow the request and the optional per-row exclusion bits.
+        const uint64_t identityOffset =
+            sizeof(Parameters) + sizeof(ModelWords) * ((uint64_t{m_geometryCount} + 127) / 128);
+        const uint64_t identityBytes = sizeof(ModelWords) * ((uint64_t{m_geometryCount} + 3) / 4);
+        const auto requestWords = (identityOffset + identityBytes) / sizeof(uint32_t);
+        const auto result =
+            allocate(sizeof(InxPhyGpuShapeCastHit) / sizeof(uint32_t), BufferUsageFlags::TransferSource);
+        ComputeDispatchDesc dispatch;
+        // The accepted geometry prefix is shared by overlaps and casts.
+        dispatch.buffers.assign(m_overlap.buffers.begin(), m_overlap.buffers.begin() + 4);
+        dispatch.buffers.push_back(allocate(requestWords, BufferUsageFlags::TransferDestination));
+        dispatch.buffers.push_back(result);
+        dispatch.buffers.push_back(allocate(workers * records * 4));
+        dispatch.buffers.push_back(allocate(workers * horizon));
+        dispatch.bufferAccesses = {R, R, R, R, R, W, W, W};
+        dispatch.proof.emplace();
+        dispatch.proof->reads.assign(m_overlap.proof->reads.begin(), m_overlap.proof->reads.begin() + 4);
+        dispatch.proof->reads.push_back({4, identityOffset, identityBytes});
+        dispatch.proof->reads.push_back({4, 0, sizeof(Parameters)});
+        dispatch.proof->writes.push_back({5, 0, result->GetByteSize()});
+        StepBuilder builder(host, target, 1);
+        dispatch.kernel = builder.Kernel("shape_cast", "cast_scene_shapes", {0, 1, 2, 3, 4, 5, 6, 7});
+        auto &identity = updates.emplace_back(
+            ComputeBufferUpdate{dispatch.buffers[4], identityOffset, std::vector<uint8_t>(identityBytes)});
+        for (uint32_t row = 0; row < m_geometryCount; ++row) {
+            const uint32_t id = bodyId(row);
+            std::memcpy(identity.data.data() + row * sizeof(id), &id, sizeof(id));
+        }
+        m_shapeCast = std::move(dispatch);
+    }
+    auto cast = m_shapeCast;
+    const size_t requestBytes = sizeof(request) + exclusions.size() * sizeof(ModelWords);
+    cast.proof->reads.back().byteSize = requestBytes;
+    auto &parameters =
+        updates.emplace_back(ComputeBufferUpdate{cast.buffers[4], 0, std::vector<uint8_t>(requestBytes)});
+    std::memcpy(parameters.data.data(), &request, sizeof(request));
+    if (!exclusions.empty())
+        std::memcpy(parameters.data.data() + sizeof(request), exclusions.data(),
+                    exclusions.size() * sizeof(ModelWords));
+    const ModelWords settings{m_geometryCount, 0, 0, static_cast<uint32_t>(source.firstRow)};
+    auto &frame = updates.emplace_back(ComputeBufferUpdate{m_settings, 0, std::vector<uint8_t>(sizeof(settings))});
+    std::memcpy(frame.data.data(), settings.data(), sizeof(settings));
+    auto dispatches = std::exchange(m_initialize, {});
+    AppendGeometry(dispatches, source);
+    const auto result = cast.buffers[5];
+    dispatches.push_back(std::move(cast));
+    return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches),
+                                    {{result, 0, sizeof(InxPhyGpuShapeCastHit)}});
 }
 
 std::vector<uint32_t> ReadInxPhyGpuSelection(const rhi::PreparedComputeBatch &packet, uint32_t count)
