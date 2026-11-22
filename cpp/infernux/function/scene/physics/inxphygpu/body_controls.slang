@@ -45,7 +45,7 @@ struct SavedMotion
     float4 worldTorque;
 };
 
-[[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
+[[vk::binding(0, 0)]] ConstantBuffer<ModelDimensions> model;
 [[vk::binding(1, 0)]] StructuredBuffer<BodyModel> bodies;
 [[vk::binding(2, 0)]] StructuredBuffer<JointModel> joints;
 [[vk::binding(3, 0)]] StructuredBuffer<uint4> spans; // count/unused/substeps, then world/body/start/count
@@ -118,7 +118,7 @@ float3 centerOffset(BodyModel body, Pose pose)
 [numthreads(64, 1, 1)]
 void import_body_states(uint3 id : SV_DispatchThreadID)
 {
-    const ModelDimensions size = model[0];
+    const ModelDimensions size = model;
     if (id.x >= size.state.z)
         return;
     const uint first = id.y * size.state.z;
@@ -166,7 +166,7 @@ void import_body_states(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void import_pending_wrenches(uint3 id : SV_DispatchThreadID)
 {
-    const uint width = model[0].state.z;
+    const uint width = model.state.z;
     if (id.x == 0 || id.x >= width || bodies[id.x].dofs.y == 0)
         return;
     const uint row = id.y * width + id.x;
@@ -191,7 +191,7 @@ void gather_device_body_motion(uint3 id : SV_DispatchThreadID)
         return;
 
     const uint4 row = impulseRows[index];
-    const ModelDimensions size = model[0];
+    const ModelDimensions size = model;
     const BodyModel body = bodies[row.y];
     const uint activityRow = row.x * size.state.z + row.y;
     SceneBodyActivity activity = bodyActivity[activityRow];
@@ -228,7 +228,7 @@ void apply_device_body_impulses(uint3 id : SV_DispatchThreadID)
         return;
 
     const uint4 row = impulseRows[index];
-    const ModelDimensions size = model[0];
+    const ModelDimensions size = model;
     const BodyModel body = bodies[row.y];
     const uint2 offset = freeAddresses(size, body, row.x);
     const Pose pose = loadOrigin(offset.x);
@@ -551,7 +551,7 @@ void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
     const SavedMotion motion = saved[index];
     if (body.dofs.z == 0 && body.hierarchy.w == NoIndex)
     {
-        const uint2 address = freeAddresses(model[0], body, span.x);
+        const uint2 address = freeAddresses(model, body, span.x);
         const Pose pose = loadOrigin(address.x);
         const float3 force = motion.worldForce.xyz;
         const float3 torque = motion.worldTorque.xyz + cross(centerOffset(body, pose), force);
@@ -566,7 +566,7 @@ void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
     const uint4 control = spans[0];
     const float alpha = float(next) / float(control.z);
     const float dt = fixedTimeSteps[span.x];
-    writePrescribedStep(span.x, body, model[0], motion.start, motion.centerTravel.xyz, motion.angularTravel.xyz,
+    writePrescribedStep(span.x, body, model, motion.start, motion.centerTravel.xyz, motion.angularTravel.xyz,
                         alpha, dt, motion.centerTravel.w);
 }
 
@@ -577,9 +577,9 @@ void applyBodyCommands<let Integrate : bool, let SceneLimits : bool>(uint index)
     const uint4 span = spans[index + 1];
     const BodyModel body = bodies[span.y];
     if (body.dofs.z == 0 && body.hierarchy.w == NoIndex)
-        applyDynamic<Integrate, SceneLimits>(index, span, model[0], body);
+        applyDynamic<Integrate, SceneLimits>(index, span, model, body);
     else
-        applyPrescribed<Integrate, SceneLimits>(index, span, model[0], body);
+        applyPrescribed<Integrate, SceneLimits>(index, span, model, body);
 }
 
 [shader("compute")]
@@ -615,7 +615,7 @@ void finishCommands<let HasStatus : bool>(uint index)
     if (index >= spans[0].x)
         return;
     const uint4 span = spans[index + 1];
-    const ModelDimensions size = model[0];
+    const ModelDimensions size = model;
     const BodyModel body = bodies[span.y];
     const bool rejected = HasStatus && status[span.x] != 0;
     if (body.dofs.z == 0 && body.hierarchy.w == NoIndex)
@@ -662,7 +662,7 @@ void finish_contact_body_commands(uint3 id : SV_DispatchThreadID)
 
 void publishBodies<let HasStatus : bool>(uint3 id)
 {
-    const ModelDimensions size = model[0];
+    const ModelDimensions size = model;
     if (id.x >= size.state.z)
         return;
     const BodyModel body = bodies[id.x];

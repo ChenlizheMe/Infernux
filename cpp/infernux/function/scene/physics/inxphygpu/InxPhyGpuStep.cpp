@@ -101,9 +101,10 @@ class StepBuilder
         return {slot, 0, slots[slot].allocation.GetByteSize()};
     }
 
-    uint32_t Seed(std::string name, uint64_t rowWords, const void *row, uint32_t rows = 1)
+    uint32_t Seed(std::string name, uint64_t rowWords, const void *row, uint32_t rows = 1,
+                  BufferUsageFlags usage = BufferUsageFlags::None)
     {
-        const auto slot = Slot(rowWords * rows, BufferUsageFlags::TransferDestination);
+        const auto slot = Slot(rowWords * rows, BufferUsageFlags::TransferDestination | usage);
         ports.push_back({std::move(name), Range(slot), true});
         auto &value = initial.emplace_back(InitialValue{slot, std::vector<uint8_t>(Range(slot).byteSize)});
         if (row && rowWords != 0) {
@@ -1450,7 +1451,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     const auto packedMass = model.dimensions.layout[3];
     const auto worldWords = [worlds](uint64_t words) { return words * worlds; };
     StepBuilder b(host, target, worlds);
-    const auto dimensions = b.Seed("model", 8, &model.dimensions);
+    const auto dimensions = b.Seed("model", 8, &model.dimensions, 1, BufferUsageFlags::Uniform);
     const auto sceneJointDescriptors =
         model.sceneJoints.empty() ? NoModelIndex : b.Shared("sceneJoints", model.sceneJoints);
     const bool multiple = substeps > 1;
