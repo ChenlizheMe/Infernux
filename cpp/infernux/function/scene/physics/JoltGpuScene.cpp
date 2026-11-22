@@ -159,7 +159,6 @@ class JoltGpuScene::Impl
         std::shared_ptr<ActorChanges> trailingCreations;
         size_t trailingCreationGroup = 0;
         std::shared_ptr<JoltGpuSleep::BoundsValidation> pendingBoundsValidation;
-        std::shared_ptr<PhysicsTargetBatch> pendingSources;
         std::vector<TargetCompletion> pendingCompletions;
         std::shared_ptr<const Publication> published;
         std::shared_ptr<const PhysicsColliderPairs> acceptedPairs = std::make_shared<const PhysicsColliderPairs>();
@@ -426,20 +425,6 @@ class JoltGpuScene::Impl
         AddCompletion(completions, target.position, PositionChannel());
         AddCompletion(completions, target.rotation, RotationChannel());
         target = {};
-    }
-
-    PhysicsTargetSource AppendSource(Partition &domain, const PhysicsTargetAuthor &author)
-    {
-        auto &pendingSources = domain.pendingSources;
-        if (!pendingSources) {
-            pendingSources = std::make_shared<PhysicsTargetBatch>();
-            pendingSources->records.reserve(slots.size() * 2);
-        }
-        if (pendingSources->records.size() == UINT32_MAX)
-            throw std::length_error("Jolt GPU author command source batch exceeds its index range");
-        const auto index = static_cast<uint32_t>(pendingSources->records.size());
-        pendingSources->records.push_back(author);
-        return {pendingSources, index};
     }
 
     /// Model groups are prepared lazily, so carry flags must come from this
@@ -1319,12 +1304,12 @@ class JoltGpuScene::Impl
         slot.desiredResident = resident;
     }
 
-    PhysicsTargetSource QueueBodyCommand(const PhysicsBodyCommand &command, const PhysicsTargetAuthor *author)
+    void QueueBodyCommand(const PhysicsBodyCommand &command, const PhysicsTargetSource &source)
     {
         const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation);
         const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation);
         if ((pose && !pose->position && !pose->rotation) || (velocity && !velocity->linear && !velocity->angular))
-            return {};
+            return;
         const auto id = command.bodyId;
         auto &domain = BodyDomain(id);
         auto &pending = domain.pending;
@@ -1339,13 +1324,13 @@ class JoltGpuScene::Impl
         const auto motion = slot.authored->acceptedMotionType;
         const bool acceptsMove =
             move && (motion == MotionKinematic || (motion == MotionStatic && move->temporaryStatic));
-        if (author && (!acceptsMove || author->bodyId != id || author->channels != channels ||
+        if (const auto *author = source.Get();
+            author && (!acceptsMove || author->bodyId != id || author->channels != channels ||
                        !actors.IsValid(slot.authored->rigidbody) ||
                        author->rigidbody.GetComponent() != actors.GetRigidbody(slot.authored->rigidbody).owner ||
                        author->ownerTransform.GetComponent() != slot.owner.target.GetComponent()))
             throw std::invalid_argument("Jolt GPU author target does not match its body or command channels");
         pendingCompletions.reserve(pendingCompletions.size() + 2);
-        const auto source = author ? AppendSource(domain, *author) : PhysicsTargetSource{};
         if (!pending.empty() && !pending.back().prepareModel && !pending.back().modelAccepted &&
             !pending.back().prepareWork) {
             pending.back().commands.push_back(command);
@@ -1378,7 +1363,6 @@ class JoltGpuScene::Impl
                 (activity && !activity->awake) || (velocity && motion != MotionStatic))
                 CancelTarget(target, pendingCompletions);
         }
-        return source;
     }
 
     void StageRetire(uint32_t id)
@@ -1607,7 +1591,6 @@ class JoltGpuScene::Impl
             reports.simulateRigidBodies || (rigidCache && (rigidCache->numeric || !rigidCache->trees.empty()));
         control.prepareContactReport = std::move(reports.phase);
         control.groups = TakeControlGroups(domain);
-        domain.pendingSources.reset();
         domain.pendingCompletions.clear();
         const std::shared_ptr<const Publication> retained = publication;
         control.prepareFinalWork = [this, publication, retained, consumer = std::move(consumer),
@@ -1817,7 +1800,6 @@ class JoltGpuScene::Impl
         domain.trailingCreations.reset();
         domain.pendingBoundsValidation.reset();
         domain.queuedPairs.reset();
-        domain.pendingSources.reset();
         domain.pendingCompletions.clear();
         for (const auto index : domain.records)
             if (index != UINT32_MAX)
@@ -2253,9 +2235,9 @@ void JoltGpuScene::SetResident(uint32_t id, bool value, bool preserve)
 {
     m_impl->SetResident(id, value, preserve);
 }
-PhysicsTargetSource JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &command, const PhysicsTargetAuthor *author)
+void JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &command, const PhysicsTargetSource &source)
 {
-    return m_impl->QueueBodyCommand(command, author);
+    m_impl->QueueBodyCommand(command, source);
 }
 
 void JoltGpuScene::QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents)

@@ -51,6 +51,8 @@ struct PhysicsDomain final
     std::unordered_set<uint32_t> cpuInterpolated;
     std::optional<float> publishedCpuInterpolationAlpha;
     bool cpuFixedAdmitted = false;
+    // Shared by the queued authored moves and their retained component guards.
+    std::shared_ptr<PhysicsTargetBatch> gpuTargetAuthors;
     bool gpuRegistered = false;
     size_t gpuBodyOwners = 0;
     struct StartupPrograms

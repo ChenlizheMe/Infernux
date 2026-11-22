@@ -1248,7 +1248,9 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
         if (!step && !frame && !world->pausedAuthor.Pending())
             continue;
         const WorldExecutionScope scope(world);
-        if (!work->IsLate() && !IsRuntimeFrameWaitingForPhysics(*world))
+        // Early work only services the admitted solver, including its sealed
+        // control prefix. The late path owns authoring and script callbacks.
+        if (!work->IsLate() && !PhysicsWorld::Instance().HasRunningGpuFixed(*world->physics))
             continue;
         m_nextRuntimeWorldId = m_runtimeWorlds[slot]->id;
         const auto cursor = [&] {
