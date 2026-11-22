@@ -1118,7 +1118,8 @@ InxPhyGpuSceneShapeRead InxPhyGpuSceneRuntime::PrepareBodyShapes(const InxPhyGpu
 PhysicsGpuJointMotionRead InxPhyGpuSceneRuntime::PrepareJointMotion(const InxPhyGpuFixedPublication &publication,
                                                                     uint32_t world,
                                                                     const std::vector<uint64_t> &jointIds,
-                                                                    bool readback) const
+                                                                    bool readback,
+                                                                    std::optional<InxPhyGpuSceneJointKind> kind) const
 {
     if (publication.m_layout != m_layout)
         throw std::invalid_argument("inxphygpu joint motion does not match its scene publication");
@@ -1128,8 +1129,8 @@ PhysicsGpuJointMotionRead InxPhyGpuSceneRuntime::PrepareJointMotion(const InxPhy
     rows.reserve(jointIds.size());
     for (const auto id : jointIds) {
         const auto joint = joints.find(id);
-        if (joint == joints.end())
-            throw std::invalid_argument("inxphygpu joint motion requires an accepted joint in the selected world");
+        if (joint == joints.end() || (kind && joint->second.kind != *kind))
+            throw std::invalid_argument("inxphygpu joint motion requires an accepted joint of the requested kind");
         rows.push_back(joint->second.row);
     }
     return m_step->PrepareJointMotion(source, rows, readback);

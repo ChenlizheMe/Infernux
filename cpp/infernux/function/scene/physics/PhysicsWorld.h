@@ -69,6 +69,7 @@ class PreparedComputeBatch;
 } // namespace rhi
 namespace physics::inxphygpu
 {
+enum class InxPhyGpuSceneJointKind : uint32_t;
 struct InxPhyGpuSceneSetup;
 struct InxPhyGpuFixedPublication;
 class InxPhyGpuSceneRuntime;
@@ -792,6 +793,7 @@ class PhysicsWorld
     };
     [[nodiscard]] JointBackend PrepareJointEndpoints(PhysicsDomain &, uint32_t ownerBody, uint32_t connectedBody);
     uint64_t StageGpuJoint(PhysicsDomain &, PhysicsConstraintOwner &, PhysicsSceneJointAuthor, JPH::GPU::JointAuthor);
+    [[nodiscard]] PhysicsDomain &RequireJointDomain(uint64_t jointId) const;
     [[nodiscard]] PhysicsDomain *FindCpuJointDomain(uint64_t jointId) const noexcept;
     void RetireCpuJointRoutes(const std::vector<uint64_t> &jointIds) noexcept;
     void RetireCpuJointRoutes(PhysicsDomain &) noexcept;
@@ -874,7 +876,8 @@ class PhysicsWorld
     PhysicsRigidbodyBatchSource ExportRaycastBatch(const std::vector<physics::inxphygpu::InxPhyGpuRay> &,
                                                    const physics::inxphygpu::InxPhyGpuDeviceRays *,
                                                    const PhysicsDeviceRayOutputs &) const;
-    void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output, uint32_t kind) const;
+    void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output,
+                         physics::inxphygpu::InxPhyGpuSceneJointKind kind) const;
     [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &, const JoltCpuQueries::Shape &,
                                                          uint32_t layers, bool triggers) const;
     [[nodiscard]] bool QueryClosestCast(PhysicsDomain &, const JoltCpuQueries::Shape &, const glm::vec3 &direction,
@@ -941,7 +944,7 @@ class PhysicsWorld
     // Live component ownership is independent of a backend's numerical slots
     // and immutable publications, which may outlive a retired component.
     std::unordered_map<uint32_t, BodyRegistration> m_bodyActors;
-    std::unordered_map<uint64_t, PhysicsDomain *> m_cpuJointDomains;
+    std::unordered_map<uint64_t, PhysicsDomain *> m_jointDomains;
     std::unordered_set<PhysicsDomain *> m_domains;
     mutable std::unique_ptr<physics::inxphygpu::InxPhyGpuPairQuery> m_gpuPairQuery;
     mutable std::unique_ptr<physics::inxphygpu::InxPhyGpuParticleExport> m_gpuParticleExport;

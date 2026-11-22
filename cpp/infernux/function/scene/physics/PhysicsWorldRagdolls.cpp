@@ -1,5 +1,4 @@
 #include "../Collider.h"
-#include "../DistanceJoint.h"
 #include "../GameObject.h"
 #include "../HingeJoint.h"
 #include "../Joint.h"
@@ -9,7 +8,6 @@
 #include "../Scene.h"
 #include "../SixDOFJoint.h"
 #include "../SkeletonInstance.h"
-#include "../SliderJoint.h"
 #include "../SwingTwistJoint.h"
 #include "../Transform.h"
 #include "JoltCpuControl.h"
@@ -54,21 +52,6 @@ uint32_t CpuJointKind(const JoltCpuConstraints::Settings &settings)
     if (std::holds_alternative<SwingTwistJointSettings>(settings))
         return JPH::GPU::JointSwingTwist;
     if (std::holds_alternative<SixDOFJointSettings>(settings))
-        return JPH::GPU::JointSixDOF;
-    return JPH::GPU::JointFixed;
-}
-
-uint32_t SceneJointKind(const Joint &joint)
-{
-    if (dynamic_cast<const HingeJoint *>(&joint))
-        return JPH::GPU::JointHinge;
-    if (dynamic_cast<const SliderJoint *>(&joint))
-        return JPH::GPU::JointSlider;
-    if (dynamic_cast<const DistanceJoint *>(&joint))
-        return JPH::GPU::JointDistance;
-    if (dynamic_cast<const SwingTwistJoint *>(&joint))
-        return JPH::GPU::JointSwingTwist;
-    if (dynamic_cast<const SixDOFJoint *>(&joint))
         return JPH::GPU::JointSixDOF;
     return JPH::GPU::JointFixed;
 }
@@ -270,7 +253,8 @@ void PhysicsWorld::ReconcileRagdolls(PhysicsDomain &domain)
                             surfaces[index].push_back(collider);
                 }
                 const auto *registered = FindBodyRegistration(member.bodyId);
-                if (!registered || (registered->backend == Backend::Gpu && !domain.gpuRegistered))
+                if (!registered ||
+                    (registered->backend == Backend::Gpu && !domain.nativeRuntime && !domain.gpuRegistered))
                     view.ready = false;
                 auto *joint = body->GetGameObject()->GetComponent<Joint>();
                 if (!joint || !joint->IsEnabled() || joint->IsDestroyed() || joint->IsBeingDestroyed())
@@ -297,13 +281,15 @@ void PhysicsWorld::ReconcileRagdolls(PhysicsDomain &domain)
                     throw std::invalid_argument("Ragdoll joint endpoints must use their Scene physics backend");
                 member.gpuJoint = domain.UsesGpu();
                 if (member.gpuJoint) {
-                    if (!domain.gpuRegistered) {
+                    const auto identity = domain.gpuJointAuthors.find(member.jointId);
+                    if (identity == domain.gpuJointAuthors.end()) {
                         view.ready = false;
                         continue;
                     }
-                    if (joint->m_boundBodyId != member.bodyId || joint->m_boundConnectedBodyId != parentId)
+                    const auto &binding = identity->second;
+                    if (binding.ownerBody != member.bodyId || binding.connectedBody != parentId)
                         throw std::logic_error("Ragdoll GPU joint endpoints differ from their member identities");
-                    member.kind = SceneJointKind(*joint);
+                    member.kind = static_cast<uint32_t>(binding.settings.index()); // Scene joint kinds
                 } else {
                     const auto *jointDomain = FindCpuJointDomain(member.jointId);
                     const auto *identity = jointDomain == &domain && domain.cpuControl
@@ -502,29 +488,36 @@ void PhysicsWorld::QueueRagdollPoseDrives(PhysicsDomain &domain, const std::vect
 {
     if (drives.empty() || domain.retiring)
         return;
-    std::vector<JoltCpuControl::JointPoseDrive> cpu;
-    std::vector<JoltGpuScene::PoseDriveIntent> gpu;
-    for (const auto &drive : drives) {
-        if (drive.gpu != domain.UsesGpu())
-            throw std::logic_error("Ragdoll drive differs from its Scene physics backend");
-        const auto value = drive.relative.value_or(glm::quat(1, 0, 0, 0));
-        if (drive.gpu) {
-            if (domain.gpuRegistered)
+    const auto usesGpu = domain.UsesGpu();
+    if (std::any_of(drives.begin(), drives.end(), [usesGpu](const auto &drive) { return drive.gpu != usesGpu; }))
+        throw std::logic_error("Ragdoll drive differs from its Scene physics backend");
+    if (usesGpu) {
+        if (!domain.nativeRuntime) {
+            if (!domain.gpuRegistered)
+                return;
+            std::vector<JoltGpuScene::PoseDriveIntent> gpu;
+            gpu.reserve(drives.size());
+            for (const auto &drive : drives) {
+                const auto value = drive.relative.value_or(glm::quat(1, 0, 0, 0));
                 gpu.push_back({drive.jointId, drive.kind, {value.x, value.y, value.z, value.w}, !drive.relative});
-        } else if (domain.cpuControl && FindCpuJointDomain(drive.jointId) == &domain) {
+            }
+            m_gpuScene->QueuePoseDrive(domain.owner, std::move(gpu));
+        }
+        for (const auto &drive : drives)
+            domain.SetGpuJointPose(drive.jointId, drive.relative);
+        return;
+    }
+    std::vector<JoltCpuControl::JointPoseDrive> cpu;
+    for (const auto &drive : drives) {
+        if (domain.cpuControl && FindCpuJointDomain(drive.jointId) == &domain) {
             JoltCpuControl::JointPoseDrive intent{drive.jointId, std::nullopt};
             if (drive.relative)
-                intent.relative.emplace(value.x, value.y, value.z, value.w);
+                intent.relative.emplace(drive.relative->x, drive.relative->y, drive.relative->z, drive.relative->w);
             cpu.push_back(std::move(intent));
         }
     }
     if (!cpu.empty())
         domain.cpuControl->QueueJointPoseDrives(std::move(cpu));
-    if (!gpu.empty()) {
-        m_gpuScene->QueuePoseDrive(domain.owner, std::move(gpu));
-        for (const auto &drive : drives)
-            domain.SetGpuJointPose(drive.jointId, drive.relative);
-    }
 }
 
 void PhysicsWorld::ClearRagdollDrive(uint64_t id)

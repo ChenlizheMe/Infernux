@@ -4392,7 +4392,7 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
             append(id, joint);
     } else if (domain.cpuControl) {
         std::vector<uint64_t> ordered;
-        for (const auto &[id, owner] : m_cpuJointDomains)
+        for (const auto &[id, owner] : m_jointDomains)
             if (owner == &domain)
                 ordered.push_back(id);
         std::sort(ordered.begin(), ordered.end());
