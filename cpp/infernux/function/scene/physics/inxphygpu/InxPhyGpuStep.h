@@ -41,6 +41,7 @@ struct InxPhyGpuContactSolver
     float tolerance = 1.0e-6f;
     float lineTolerance = 0.01f;
     float minimumRestitutionSpeed = 2.0f;
+    float linearCastThreshold = 0.5f;
 };
 
 struct InxPhyGpuSleepSettings

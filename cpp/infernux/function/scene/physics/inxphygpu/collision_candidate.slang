@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Infernux contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#pragma once
+
 struct CollisionCandidate
 {
     uint firstGeometry;

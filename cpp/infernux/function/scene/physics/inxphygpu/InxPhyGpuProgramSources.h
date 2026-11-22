@@ -47,6 +47,7 @@ inline constexpr InxPhyGpuProgramSource InxPhyGpuProgramSources[] = {
     {"ray_queries"},
     {"render_poses"},
     {"rk4"},
+    {"scene_ccd"},
     {"shape_cast"},
     {"sleep"},
     {"spatial_constraints"},

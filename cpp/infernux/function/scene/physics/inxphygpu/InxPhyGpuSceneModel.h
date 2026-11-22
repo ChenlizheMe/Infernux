@@ -44,6 +44,7 @@ struct InxPhyGpuSceneActor
     ModelRigidMotion motion;
     glm::vec3 scale{1.0f};
     uint32_t frozenAxes = 0; // World-space COM translation, then world-space rotation.
+    uint32_t collisionDetectionMode = 0;
 };
 
 struct InxPhyGpuSceneSurfaceIdentity

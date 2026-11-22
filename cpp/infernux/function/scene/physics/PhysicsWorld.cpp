@@ -1004,7 +1004,9 @@ bool PhysicsWorld::PrepareInxPhyGpuTopology(PhysicsDomain &domain, PhysicsFixedI
                 throw std::length_error("GPU physics scene exceeds constraint index range");
             const InxPhyGpuCollisionCapacity collision{static_cast<uint32_t>(std::max(contacts, shapes * 16)),
                                                        static_cast<uint32_t>(contacts)};
-            const InxPhyGpuContactSolver solver{static_cast<uint32_t>(rows), static_cast<uint32_t>(rows * 12)};
+            InxPhyGpuContactSolver solver{static_cast<uint32_t>(rows), static_cast<uint32_t>(rows * 12)};
+            solver.minimumRestitutionSpeed = config.physicsMinVelocityForRestitution;
+            solver.linearCastThreshold = config.physicsLinearCastThreshold;
             RegisterDomain(domain);
             domain.nativeTopology = std::make_unique<InxPhyGpuSceneRuntime>(
                 *m_gpuWork, *m_gpuHost, PhysicsShaderTarget(*m_gpuHost), setup->model,

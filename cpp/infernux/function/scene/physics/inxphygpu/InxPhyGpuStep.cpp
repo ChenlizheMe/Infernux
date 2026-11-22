@@ -241,6 +241,8 @@ struct ContactSlots
     uint32_t counts;
     uint32_t records;
     uint32_t narrowphaseStatus;
+    uint32_t pairRules;
+    uint32_t materials;
 };
 
 struct GeometrySlots
@@ -387,7 +389,56 @@ ContactSlots AddCollision(StepBuilder &b, const InxPhyGpuModel &model, const Inx
         if (collision.triangleMeshes)
             narrowphase("triangle_mesh_contacts", "collide_triangle_mesh");
     }
-    return {pairCount, counts, contacts, status};
+    return {pairCount, counts, contacts, status, rules, materials};
+}
+
+void AddSceneContinuousCollision(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision,
+                                 const GeometrySlots &geometry, const ContactSlots &contacts,
+                                 const InxPhyGpuContactSolver &solver, float dt, uint32_t dimensions, uint32_t bodies,
+                                 uint32_t start, uint32_t positions, uint32_t velocities, uint32_t status,
+                                 uint32_t activity)
+{
+    const ModelWords settings{FloatWord(dt), FloatWord(solver.linearCastThreshold),
+                              FloatWord(solver.minimumRestitutionSpeed), collision.filterConnectedBodies};
+    const auto options = b.Seed("sceneCcdSettings", 4, &settings);
+    const auto rows = b.Shared("sceneCcdBodies", model.sceneContinuousCollision);
+    const auto nb = model.dimensions.state[2];
+    const auto motion = b.Slot(16 * uint64_t{nb} * b.worlds);
+    constexpr uint64_t workers = 8, records = 1360, edges = 512;
+    const auto scratch = b.Slot(4 * workers * records * b.worlds);
+    const auto horizon = b.Slot(workers * edges * b.worlds);
+    b.Add("scene_ccd", "prepare_scene_ccd", nb,
+          {{8, dimensions, R},
+           {9, bodies, R},
+           {10, rows, R},
+           {11, positions, R},
+           {12, velocities, R},
+           {13, start, R},
+           {14, motion, W, true},
+           {15, options, R},
+           {16, status, R}});
+    b.Add("scene_ccd", "solve_scene_ccd", 1,
+          {{2, geometry.shapes, R},
+           {5, contacts.materials, R},
+           {8, dimensions, R},
+           {9, bodies, R},
+           {10, rows, R},
+           {14, motion, RW},
+           {15, options, R},
+           {17, geometry.geometries, R},
+           {19, contacts.pairRules, R},
+           {20, geometry.data, R},
+           {21, scratch, W},
+           {22, horizon, W}},
+          true);
+    b.Add("scene_ccd", "publish_scene_ccd", nb,
+          {{8, dimensions, R},
+           {9, bodies, R},
+           {10, rows, R},
+           {11, positions, RW},
+           {12, velocities, RW},
+           {14, motion, R},
+           {23, activity, RW}});
 }
 
 struct RaySlots
@@ -1844,6 +1895,10 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         const auto *entry = positionEntries[2 * controlSlots.has_value() + sceneDynamics][response.has_value()];
         if (nj != 0)
             b.dispatches.push_back(b.Bind("euler", entry, nj, integratePosition));
+        if (response && controlSlots && !model.sceneContinuousCollision.empty())
+            AddSceneContinuousCollision(b, model, *collision, *particleGeometry, *contactSlots, *solver, substepDt,
+                                        dimensions, bodies, pose, positions, velocities, response->status,
+                                        controlSlots->activity);
         if (controlSlots) {
             if (!std::isfinite(sleep.quietTime) || sleep.quietTime <= 0.0f || !std::isfinite(sleep.pointVelocity) ||
                 sleep.pointVelocity < 0.0f)

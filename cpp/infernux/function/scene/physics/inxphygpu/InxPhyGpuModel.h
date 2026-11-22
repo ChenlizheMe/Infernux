@@ -173,7 +173,8 @@ struct InxPhyGpuModel
     // Rows mirror PrescribedMotion: linear/mode, angular, and COM/accepted step.
     std::vector<std::array<ModelVector, 3>> initialKinematicMotion;
     std::vector<ModelPose> initialStaticPoses;
-    std::vector<ModelRigidMotion> sceneBodyMotion; // Shared by independent scene bodies in device row order.
+    std::vector<ModelRigidMotion> sceneBodyMotion;    // Shared by independent scene bodies in device row order.
+    std::vector<ModelWords> sceneContinuousCollision; // Per body: qpos, qvel, mode, inner radius.
     std::vector<ModelWords> sceneJoints;
     std::vector<ModelWords> initialSceneJointParameters; // Packed by joint kind, shared as the seed for each world.
 };

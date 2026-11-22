@@ -460,6 +460,7 @@ InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author)
     if (const auto &body = author.body) {
         source.kinematic = body->kinematic;
         source.gravityFactor = body->gravityFactor;
+        source.collisionDetectionMode = static_cast<uint32_t>(body->collisionDetectionMode);
         source.frozenAxes = (static_cast<uint32_t>(body->constraints) >> 1) & 63u;
         source.motion = {body->drag, body->angularDrag, body->maxLinearVelocity, body->maxAngularVelocity};
         if (!source.kinematic)
@@ -572,6 +573,10 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
     auto &initial = result.model.initialVelocities;
     initial.resize(result.model.dofs.size());
     auto &motion = result.model.sceneBodyMotion;
+    auto &continuous = result.model.sceneContinuousCollision;
+    if (std::any_of(actors.begin(), actors.end(),
+                    [](const auto &actor) { return actor.mass && actor.collisionDetectionMode != 0; }))
+        continuous.resize(result.model.bodies.size(), {NoModelIndex, NoModelIndex, 0, 0});
     if (std::any_of(actors.begin(), actors.end(), [](const auto &actor) {
             return (actor.mass || actor.kinematic) && (actor.motion.HasSettings() || actor.frozenAxes);
         }))
@@ -592,6 +597,12 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
         const uint32_t firstJoint = body.hierarchy[1];
         const uint32_t qpos = firstJoint == NoModelIndex ? NoModelIndex : result.model.joints[firstJoint].indices[1];
         const uint32_t qvel = body.dofs[0];
+        if (!continuous.empty()) {
+            const float radius = actor.shape->GetInnerRadius();
+            uint32_t radiusBits;
+            std::memcpy(&radiusBits, &radius, sizeof(radiusBits));
+            continuous[row] = {qpos, qvel, actor.mass ? actor.collisionDetectionMode : 0u, radiusBits};
+        }
         result.bodies.push_back({actor.objectId, row, qpos, qvel, static_cast<uint32_t>(actor.colliders.size())});
         if (!motion.empty())
             motion[row] = actor.motion;
