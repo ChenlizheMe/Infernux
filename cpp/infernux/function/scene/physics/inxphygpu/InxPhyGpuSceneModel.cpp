@@ -521,15 +521,17 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
             shape.material.dimensions[3] = 1 + static_cast<int32_t>(surface.bounceCombine);
             shape.trigger = surface.trigger;
             shape.subShape = leaf.mSubShapeIDCreator.GetID().GetValue();
-            glm::quat rotation = Rotation(leaf.mShapeRotation);
+            const auto localRotation = Rotation(leaf.mShapeRotation);
+            auto rotation = localRotation;
             if (kind == Capsule || kind == Cylinder) {
                 // Jolt axial primitives run along +Y. inxphygpu primitives run along +Z.
                 constexpr float halfRoot = 0.7071067811865475f;
                 rotation *= glm::quat(halfRoot, -halfRoot, 0.0f, 0.0f);
             }
-            geometries.push_back({index, kind, 1u << surface.layer, surface.collisionMask,
-                                  Pose(center + Vector(leaf.mShapePositionCOM), rotation)});
-            result.geometries.push_back({surface, shape.subShape, member});
+            const auto offset = Vector(leaf.mShapePositionCOM);
+            geometries.push_back(
+                {index, kind, 1u << surface.layer, surface.collisionMask, Pose(center + offset, rotation)});
+            result.geometries.push_back({surface, shape.subShape, member, leaf.mShape, offset, localRotation});
         }
     }
     firstGeometry.push_back(static_cast<uint32_t>(geometries.size()));

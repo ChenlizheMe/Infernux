@@ -86,6 +86,9 @@ struct InxPhyGpuSceneGeometryBinding
     InxPhyGpuSceneCollider collider;
     uint32_t subShape;
     uint32_t surface;
+    JPH::RefConst<JPH::Shape> shape;
+    glm::vec3 centerOfMassOffset;
+    glm::quat localRotation;
 };
 
 struct InxPhyGpuSceneHinge
@@ -191,7 +194,7 @@ struct InxPhyGpuSceneModel
 
 [[nodiscard]] InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author);
 
-/// Translate one authored topology. The result owns no scene objects or Jolt shapes.
+/// Translate one authored topology. Retains immutable cooked leaves for host shape reads.
 [[nodiscard]] InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneActor> &actors,
                                                            const std::vector<InxPhyGpuSceneJoint> &joints = {},
                                                            const PhysicsColliderPairs &ignoredColliders = {});

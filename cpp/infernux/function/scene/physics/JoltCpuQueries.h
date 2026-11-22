@@ -25,7 +25,6 @@ class JoltCpuScene;
 class Rigidbody;
 struct JoltCpuShapeLeaves;
 struct PhysicsRigidbodyStateBatch;
-struct PhysicsShapeGeometry;
 struct PhysicsShapeState;
 struct PhysicsBoxShapeState;
 enum class PhysicsStateFields : uint32_t;
@@ -123,7 +122,6 @@ class JoltCpuQueries final
     [[nodiscard]] std::vector<PhysicsShapeState> GatherBodyShapes(uint32_t bodyId, bool triggers) const;
 
   private:
-    static std::shared_ptr<const PhysicsShapeGeometry> ResolveGeometry(const JPH::Shape &shape);
     static void CacheMeshGeometry(const JoltCpuShapeLeaves &leaves, size_t index);
     const JoltCpuScene &m_scene;
 };

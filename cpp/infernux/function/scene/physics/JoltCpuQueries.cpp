@@ -756,43 +756,6 @@ void JoltCpuScene::BodyRecord::ReuseQueryGeometry(const BodyRecord &previous)
     }
 }
 
-std::shared_ptr<const PhysicsShapeGeometry> JoltCpuQueries::ResolveGeometry(const JPH::Shape &shape)
-{
-    auto geometry = std::make_shared<PhysicsShapeGeometry>();
-    auto owner = std::make_shared<JPH::RefConst<JPH::Shape>>(&shape);
-    geometry->shape = std::shared_ptr<const JPH::Shape>(std::move(owner), &shape);
-    geometry->identity = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&shape));
-    geometry->convex = shape.GetType() == JPH::EShapeType::Convex;
-    const auto bounds = shape.GetLocalBounds();
-    geometry->boundsMin = Vector(bounds.mMin);
-    geometry->boundsMax = Vector(bounds.mMax);
-    switch (shape.GetSubType()) {
-    case JPH::EShapeSubType::Box: {
-        const auto &box = static_cast<const JPH::BoxShape &>(shape);
-        geometry->type = PhysicsShapeType::Box;
-        geometry->dimensions = glm::vec4(2.0f * Vector(box.GetHalfExtent()), box.GetConvexRadius());
-        break;
-    }
-    case JPH::EShapeSubType::Sphere:
-        geometry->type = PhysicsShapeType::Sphere;
-        geometry->dimensions.x = static_cast<const JPH::SphereShape &>(shape).GetRadius();
-        break;
-    case JPH::EShapeSubType::Capsule: {
-        const auto &capsule = static_cast<const JPH::CapsuleShape &>(shape);
-        const float radius = capsule.GetRadius();
-        geometry->type = PhysicsShapeType::Capsule;
-        geometry->dimensions = {radius, 2.0f * (capsule.GetHalfHeightOfCylinder() + radius), 1.0f, 0.0f};
-        break;
-    }
-    default:
-        // Cylinders and convex hulls expose their
-        // immutable surface through GetTriangles.
-        geometry->type = PhysicsShapeType::Mesh;
-        break;
-    }
-    return geometry;
-}
-
 void JoltCpuQueries::CacheMeshGeometry(const JoltCpuShapeLeaves &leaves, size_t index)
 {
     const auto &leaf = leaves.entries[index];
@@ -989,7 +952,7 @@ std::vector<PhysicsShapeState> JoltCpuQueries::GatherBodyShapes(uint32_t bodyId,
             }
         } else {
             if (!leaf.geometry)
-                leaf.geometry = ResolveGeometry(*leaf.native.mShape);
+                leaf.geometry = PhysicsShapeGeometry::DescribeLeaf(*leaf.native.mShape);
             state.geometry = leaf.geometry;
             state.center = Vector(center);
             result.push_back(std::move(state));

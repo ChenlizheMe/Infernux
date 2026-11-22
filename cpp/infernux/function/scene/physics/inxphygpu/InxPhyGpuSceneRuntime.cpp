@@ -51,6 +51,9 @@ struct InxPhyGpuSceneLayout
         uint32_t body, surface, subshape;
         uint32_t layers, flags;
         ModelVector halfBounds, boundsCenter, material;
+        JPH::RefConst<JPH::Shape> shape;
+        glm::vec3 centerOfMassOffset;
+        glm::quat localRotation;
     };
     enum class Drive : uint8_t
     {
@@ -246,6 +249,37 @@ std::vector<InxPhyGpuHostBody> InxPhyGpuSceneBodyRead::ReadHostBodies() const
     return bodies;
 }
 
+std::vector<PhysicsShapeState> InxPhyGpuSceneShapeRead::ReadHostShapes() const
+{
+    if (m_leaves.empty())
+        return {};
+    const auto body = m_motion.Read().front();
+    const auto &surfaces = m_layout->worlds[m_world].bodies[m_body].surfaces;
+    std::vector<PhysicsShapeState> shapes;
+    shapes.reserve(m_leaves.size());
+    for (const auto row : m_leaves) {
+        const auto &leaf = m_layout->geometries[row];
+        auto &state = shapes.emplace_back();
+        if (!surfaces.empty())
+            state.collider = surfaces[leaf.surface].target.GetCollider();
+        state.memberIndex = leaf.surface;
+        state.layerBit = leaf.layers;
+        state.trigger = (leaf.flags & 2u) != 0;
+        state.moving = (leaf.flags & 1u) == 0;
+        state.geometry = PhysicsShapeGeometry::DescribeLeaf(*leaf.shape);
+        state.center = body.centerOfMass + body.rotation * leaf.centerOfMassOffset;
+        state.rotation = glm::normalize(body.rotation * leaf.localRotation);
+        state.bodyCenterOfMass = body.centerOfMass;
+        state.linearVelocity = body.linearVelocity;
+        state.angularVelocity = body.angularVelocity;
+        state.friction = leaf.material[0];
+        state.bounciness = leaf.material[1];
+        state.frictionCombine = static_cast<uint32_t>(leaf.material[2]);
+        state.bounceCombine = static_cast<uint32_t>(leaf.material[3]);
+    }
+    return shapes;
+}
+
 std::vector<RaycastHit> InxPhyGpuSceneRayBatch::ReadHostHits() const
 {
     if (!m_layout)
@@ -337,7 +371,10 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
              bounds.halfExtent,
              bounds.center,
              {material.friction, material.bounciness, static_cast<float>(material.frictionCombine),
-              static_cast<float>(material.bounceCombine)}});
+              static_cast<float>(material.bounceCombine)},
+             geometry.shape,
+             geometry.centerOfMassOffset,
+             geometry.localRotation});
         auto &range = layout->colliderGeometry[body][geometry.surface];
         range.first = std::min(range.first, row);
         range.second = row + 1;
@@ -963,6 +1000,37 @@ InxPhyGpuSceneBodyRead InxPhyGpuSceneRuntime::PrepareBodyRead(const InxPhyGpuFix
                                                             static_cast<uint32_t>(PhysicsStateFields::AngularVelocity));
     InxPhyGpuSceneBodyRead result;
     result.identity = publication.worlds[world].identity;
+    auto host = m_host;
+    result.m_motion = PhysicsGpuMotionRead::Prepare(host, source.poses, std::move(source.bodies), fields);
+    result.packet = result.m_motion.packet;
+    return result;
+}
+
+InxPhyGpuSceneShapeRead InxPhyGpuSceneRuntime::PrepareBodyShapes(const InxPhyGpuFixedPublication &publication,
+                                                                 uint32_t world, uint32_t body, bool triggers) const
+{
+    if (publication.m_layout != m_layout)
+        throw std::invalid_argument("inxphygpu shape read does not match its scene publication");
+    const auto row = m_layout->worlds.at(world).BodyRow(body);
+    if (!row)
+        throw std::invalid_argument("inxphygpu shape read requires an accepted body in the selected world");
+    InxPhyGpuSceneShapeRead result;
+    result.identity = publication.worlds[world].identity;
+    for (const auto &[first, last] : m_layout->colliderGeometry[*row])
+        for (uint32_t leaf = first; leaf < last; ++leaf)
+            if (triggers || (m_layout->geometries[leaf].flags & 2u) == 0)
+                result.m_leaves.push_back(leaf);
+    if (result.m_leaves.empty())
+        return result;
+
+    result.m_layout = m_layout;
+    result.m_world = world;
+    result.m_body = *row;
+    auto source = publication.GatherMotion(world, {body});
+    constexpr auto fields = static_cast<PhysicsStateFields>(static_cast<uint32_t>(PhysicsStateFields::Rotation) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::CenterOfMass) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::LinearVelocity) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::AngularVelocity));
     auto host = m_host;
     result.m_motion = PhysicsGpuMotionRead::Prepare(host, source.poses, std::move(source.bodies), fields);
     result.packet = result.m_motion.packet;

@@ -9,6 +9,7 @@
 #include "../PhysicsECSStore.h"
 #include "../PhysicsGpuRenderBindings.h"
 #include "../PhysicsRaycastHit.h"
+#include "../PhysicsShapeState.h"
 #include "../PhysicsTargetReference.h"
 #include "InxPhyGpuParticleExport.h"
 #include "InxPhyGpuSceneModel.h"
@@ -161,6 +162,21 @@ struct InxPhyGpuSceneBodyRead
     PhysicsGpuMotionRead m_motion;
 };
 
+struct InxPhyGpuSceneShapeRead
+{
+    ContactStreamIdentity identity;
+    std::shared_ptr<rhi::PreparedComputeBatch> packet;
+
+    [[nodiscard]] std::vector<PhysicsShapeState> ReadHostShapes() const;
+
+  private:
+    friend class InxPhyGpuSceneRuntime;
+    std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
+    PhysicsGpuMotionRead m_motion;
+    std::vector<uint32_t> m_leaves;
+    uint32_t m_world = 0, m_body = 0;
+};
+
 struct InxPhyGpuSceneRayBatch
 {
     ContactStreamIdentity identity;
@@ -257,6 +273,9 @@ class InxPhyGpuSceneRuntime final
     /// uses the same readback and retains its position in the requested order.
     [[nodiscard]] InxPhyGpuSceneBodyRead PrepareBodyRead(const InxPhyGpuFixedPublication &publication, uint32_t world,
                                                          const std::vector<uint32_t> &engineBodies) const;
+    /// Read the body motion and resolve its cooked leaves against the same publication.
+    [[nodiscard]] InxPhyGpuSceneShapeRead PrepareBodyShapes(const InxPhyGpuFixedPublication &publication,
+                                                            uint32_t world, uint32_t body, bool triggers) const;
     /// Resolve stable joint IDs in the selected accepted world and keep the
     /// requested order. The result can feed a device consumer without readback.
     [[nodiscard]] PhysicsGpuJointMotionRead PrepareJointMotion(const InxPhyGpuFixedPublication &publication,

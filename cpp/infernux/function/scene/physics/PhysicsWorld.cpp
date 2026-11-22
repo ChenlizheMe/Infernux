@@ -4939,32 +4939,7 @@ PhysicsWorld::ResolveShapeGeometry(PhysicsDomain &domain, const JoltGpuScene::Pu
     if (const auto found = domain.shapeGeometry.find(shape); found != domain.shapeGeometry.end())
         if (auto geometry = found->second.lock())
             return geometry;
-    auto geometry = std::make_shared<PhysicsShapeGeometry>();
-    // Intrusive Jolt ownership is retained by the aliasing owner. The pointer
-    // is an in-process identity only and remains unique while this value lives.
-    auto owner = std::make_shared<JPH::RefConst<JPH::Shape>>(leaf.shape);
-    geometry->shape = std::shared_ptr<const JPH::Shape>(std::move(owner), shape);
-    geometry->identity = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape));
-    geometry->convex = true;
-    const auto bounds = shape->GetLocalBounds();
-    geometry->boundsMin = {bounds.mMin.GetX(), bounds.mMin.GetY(), bounds.mMin.GetZ()};
-    geometry->boundsMax = {bounds.mMax.GetX(), bounds.mMax.GetY(), bounds.mMax.GetZ()};
-    if (leaf.shapeType == ShapeBox) {
-        geometry->type = PhysicsShapeType::Box;
-        geometry->dimensions = {leaf.dimensions.x * 2, leaf.dimensions.y * 2, leaf.dimensions.z * 2, leaf.dimensions.w};
-    } else if (leaf.shapeType == ShapeSphere) {
-        geometry->type = PhysicsShapeType::Sphere;
-        geometry->dimensions = {leaf.dimensions.w, 0, 0, 0};
-    } else if (leaf.shapeType == ShapeCapsule) {
-        geometry->type = PhysicsShapeType::Capsule;
-        geometry->dimensions = {leaf.dimensions.w, 2 * (leaf.dimensions.y + leaf.dimensions.w), 1, 0};
-    } else if (leaf.shapeType == ShapeCylinder || leaf.shapeType == ShapeConvexHull) {
-        // The existing immutable convex mesh view exposes the cooked native surface.
-        // This adapter describes the accepted GPU operand without reading its numerical state.
-        geometry->type = PhysicsShapeType::Mesh;
-    } else {
-        throw std::runtime_error("GPU shape state has no immutable geometry adapter");
-    }
+    auto geometry = PhysicsShapeGeometry::DescribeLeaf(*shape);
     domain.shapeGeometry[shape] = geometry;
     return geometry;
 }
@@ -5094,28 +5069,6 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
     auto result = work->Finish();
     if (replacement)
         domain.sceneRays = std::move(replacement);
-    return result;
-}
-
-std::vector<glm::vec3> PhysicsShapeGeometry::GetTriangles() const
-{
-    if (triangle) {
-        // A zero-margin triangle hull exposes both sides of the same face.
-        const auto &[a, b, c] = *triangle;
-        return {a, b, c, a, c, b};
-    }
-    if (!shape)
-        throw std::logic_error("Shape geometry has no immutable authored shape");
-    JPH::Shape::GetTrianglesContext context;
-    const JPH::Vec3 leafScale(scale.x, scale.y, scale.z);
-    shape->GetTrianglesStart(context, shape->GetLocalBounds().Scaled(leafScale), JPH::Vec3::sZero(),
-                             JPH::Quat::sIdentity(), leafScale);
-    constexpr int batchSize = 256;
-    JPH::Float3 vertices[3 * batchSize];
-    std::vector<glm::vec3> result;
-    for (int count; (count = shape->GetTrianglesNext(context, batchSize, vertices)) != 0;)
-        for (int i = 0; i < count * 3; ++i)
-            result.emplace_back(vertices[i].x, vertices[i].y, vertices[i].z);
     return result;
 }
 
