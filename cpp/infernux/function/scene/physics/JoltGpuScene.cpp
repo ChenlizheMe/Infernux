@@ -1310,7 +1310,10 @@ class JoltGpuScene::Impl
     void FlushSceneCommands(Partition &domain)
     {
         // Preserve the command order across author topology edits during migration.
-        auto &sceneCommands = domain.world->physics->gpuBodyCommands;
+        auto &physics = *domain.world->physics;
+        if (physics.nativeRuntime)
+            return;
+        auto &sceneCommands = physics.gpuBodyCommands;
         for (const auto &entry : sceneCommands)
             AppendSceneCommand(domain, entry.command, entry.target);
         sceneCommands.clear();

@@ -1173,6 +1173,8 @@ void PhysicsWorld::ServiceGpuRetirements()
 void PhysicsWorld::Shutdown()
 {
     for (auto *domain : m_domains) {
+        domain->RetireInxPhyGpuFixed();
+        domain->nativeRuntime.reset();
         if (domain->gpuRegistered)
             m_gpuScene->Cancel(domain->owner);
         domain->rendering.bindings.Clear();
@@ -1260,6 +1262,11 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     if (!EnsureStaticBoundaries(domain))
         return false;
     QueueStaticFixedMoves(domain);
+    if (domain.nativeRuntime) {
+        domain.BeginInxPhyGpuFixed({domain.owner.id, domain.stepEpoch, domain.stepIndex}, domain.AdmittedFixedInputs());
+        SealStaticFixedMoves(domain);
+        return true;
+    }
     auto policy = CaptureContactPolicy(domain);
     if (domain.gpuRegistered) {
         QueueColliderPairs(domain);
@@ -1518,8 +1525,6 @@ PhysicsPosePublication PhysicsWorld::PublishRenderPoses() const
         auto &rendering = domain.rendering;
         if (!domain.UsesGpu())
             return PublishCpuPoses(domain, CpuPresentationAlpha(domain));
-        if (!domain.gpuRegistered || !m_gpuRenderProgram)
-            return {};
         const auto &job = rendering.ready;
         if (!job)
             return {};
@@ -1536,7 +1541,8 @@ PhysicsPosePublication PhysicsWorld::PublishRenderPoses() const
         throw;
     }
 }
-JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain, bool numericalChange) const
+std::shared_ptr<PhysicsGpuRenderJob> PhysicsWorld::CaptureGpuRenderJob(PhysicsDomain &domain,
+                                                                       bool numericalChange) const
 {
     const WorldExecutionScope ownerScope(&domain.owner);
     FrameWorkOwner::Scope preparation(*m_gpuWork);
@@ -1554,10 +1560,18 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
         rendering.checkedKeys = keys;
         return {};
     }
-    auto job = std::make_shared<PhysicsDomain::RenderState::Job>();
+    auto job = std::make_shared<PhysicsGpuRenderJob>();
     job->snapshot = std::move(snapshot);
     job->keys = keys;
-    rendering.pending = job;
+    return job;
+}
+
+JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain, bool numericalChange) const
+{
+    auto job = CaptureGpuRenderJob(domain, numericalChange);
+    domain.rendering.pending = job;
+    if (!job)
+        return {};
     return [this, &domain, job = std::move(job)](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
         auto &state = domain.rendering;
         const PhysicsGpuRenderBindings::Source source{
@@ -1579,6 +1593,75 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
         });
     };
 }
+
+void PhysicsDomain::BeginInxPhyGpuFixed(ContactStreamIdentity identity, PhysicsFixedInputs input)
+{
+    using namespace physics::inxphygpu;
+    auto &physics = PhysicsWorld::Instance();
+    physics.RequireOwnerThread();
+    physics.RequireHealthyStep(*this);
+    if (!nativeRuntime || retiring || nativeFixedAdmission || gpuJointLayoutDirty || identity.worldId != owner.id ||
+        identity.simulationEpoch != owner.simulation.simulationEpoch)
+        throw std::logic_error("inxphygpu fixed admission requires its live scene layout and fixed identity");
+    auto policy = physics.CaptureContactPolicy(*this);
+    auto job = physics.CaptureGpuRenderJob(*this, true);
+    InxPhyGpuSceneRuntime::PublicationConsumer publish;
+    if (job) {
+        if (!physics.m_gpuRenderProgram) {
+            auto &host = *physics.m_gpuHost;
+            physics.m_gpuRenderProgram = std::make_unique<PhysicsGpuRenderPoses>(
+                host, LoadInxPhyGpuProgram("render_poses", PhysicsShaderTarget(host)));
+        }
+        publish = [this, &physics, identity, job](const InxPhyGpuFixedPublication &publication) {
+            const auto row = publication.FindAcceptedWorld(identity);
+            if (!row)
+                throw std::logic_error("inxphygpu render export requires the admitted fixed publication");
+            const PhysicsGpuRenderBindings::Source source{
+                publication.PoseSource(*row),
+                [&](PhysicsActorHandle actor, uint32_t body) { return publication.FindPoseBody(*row, actor, body); }};
+            job->output = rendering.bindings.PrepareExport(job->snapshot, source, *physics.m_gpuRenderProgram);
+            return InxPhyGpuSceneRuntime::PublicationWork{job->output->Packet(), [job] { job->output->Seal(); }};
+        };
+    }
+    nativeRuntime->BeginFixed({identity}, gpuBodyCommands, false, policy.Requested(), CaptureGpuJointEdits(),
+                              std::move(publish), {input}, {}, {{owner.id, participants}});
+    nativeFixedAdmission.emplace(InxPhyGpuFixedAdmission{identity, std::move(policy), std::move(job)});
+    gpuBodyCommands.clear();
+    gpuTargetAuthors.reset();
+    AcceptGpuJointEdits();
+}
+
+bool PhysicsDomain::PublishInxPhyGpuFixed()
+{
+    PhysicsWorld::Instance().RequireOwnerThread();
+    const auto &admission = nativeFixedAdmission.value();
+    auto completed = nativeRuntime->TakePublication();
+    if (!completed)
+        return false;
+    const auto row = completed->FindAcceptedWorld(admission.identity);
+    if (!row || completed->worlds[*row].status != 0)
+        throw std::runtime_error("inxphygpu did not complete the admitted scene fixed step");
+    auto publication = std::make_shared<physics::inxphygpu::InxPhyGpuFixedPublication>(std::move(*completed));
+    publication->PublishContacts(*row, contacts, admission.contacts);
+    nativeFixedPublication = std::move(publication);
+    const auto generation = queryGeneration.fetch_add(1, std::memory_order_release) + 1;
+    requestedMotion.clear();
+    if (const auto &job = admission.renderJob; job && job->output) {
+        job->numericalGeneration = generation;
+        rendering.ready = job;
+    }
+    nativeFixedAdmission.reset();
+    return true;
+}
+
+void PhysicsDomain::RetireInxPhyGpuFixed() noexcept
+{
+    if (nativeRuntime)
+        nativeRuntime->Retire();
+    nativeFixedAdmission.reset();
+    nativeFixedPublication.reset();
+}
+
 void PhysicsWorld::RequireHealthyStep(PhysicsDomain &domain) const
 {
     if (domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
@@ -1586,6 +1669,7 @@ void PhysicsWorld::RequireHealthyStep(PhysicsDomain &domain) const
 }
 void PhysicsWorld::FailStep(PhysicsDomain &domain) noexcept
 {
+    domain.RetireInxPhyGpuFixed();
     GpuPublicationReader::Cancel(domain.participantInitialization);
     domain.gpuContacts.CancelPending();
     domain.cpuContacts.CancelPending();
@@ -1744,7 +1828,8 @@ bool PhysicsWorld::ServiceParticipantOutputs()
         domain.participantOutput.reset();
     }
     // Observe a previously admitted solver without advancing it from an output reader.
-    const auto status = domain.gpuRegistered ? m_gpuScene->GetTickStatus(domain.owner) : JoltGpuTick::Status::Idle;
+    const auto status = domain.gpuRegistered && !domain.nativeRuntime ? m_gpuScene->GetTickStatus(domain.owner)
+                                                                      : JoltGpuTick::Status::Idle;
     if (status == JoltGpuTick::Status::Failed)
         throw std::runtime_error("Participant output source failed");
     if (domain.stepPending && !domain.stepCompleted) {
@@ -1769,7 +1854,11 @@ bool PhysicsWorld::ServiceParticipantOutputs()
     const auto &clock = domain.owner.simulation;
     auto epoch = clock.simulationEpoch, step = clock.publishedFixedStepIndex;
     bool fixed = false;
-    if (domain.gpuRegistered) {
+    if (domain.nativeFixedPublication) {
+        const auto &publication = domain.nativeFixedPublication->worlds.front();
+        step = publication.identity.fixedStepIndex;
+        fixed = true;
+    } else if (domain.gpuRegistered && !domain.nativeRuntime) {
         if (m_gpuScene->IsWriterFor(domain.owner))
             return false;
         const auto &publication = m_gpuScene->GetPublished(domain.owner);
@@ -1821,8 +1910,9 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
             // later numerical writer, including the next fixed integration.
             if ((domain.UsesGpu() && !ServiceParticipantPreparation()) || !ServiceParticipantOutputs())
                 return false;
-            auto participants = domain.UsesGpu() ? CaptureParticipants(domain) : JoltGpuParticipantStages{};
-            if ((domain.gpuRegistered || participants) && !EnsureGpuReady(domain))
+            auto participants =
+                domain.UsesGpu() && !domain.nativeRuntime ? CaptureParticipants(domain) : JoltGpuParticipantStages{};
+            if (!domain.nativeRuntime && (domain.gpuRegistered || participants) && !EnsureGpuReady(domain))
                 return false;
             RefreshBodySurfaces(domain);
             domain.stepEpoch = epoch;
@@ -1832,9 +1922,9 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
             const auto &config = EngineConfig::Get();
             if (config.physicsVelocitySteps < 0 || config.physicsPositionSteps < 0 || config.physicsCollisionSteps <= 0)
                 throw std::invalid_argument("Physics iterations and substeps are invalid");
-            if (domain.UsesGpu()) {
+            if (domain.UsesGpu() && !domain.nativeRuntime) {
                 domain.admittedParameters = StepParameters(domain.AdmittedFixedInputs());
-            } else {
+            } else if (!domain.UsesGpu()) {
                 domain.admittedCpuSettings = JoltCpuScene::CaptureSettings(config);
             }
             domain.admittedSubsteps = static_cast<uint32_t>(config.physicsCollisionSteps);
@@ -1898,6 +1988,13 @@ bool PhysicsWorld::AdvanceFixedStep(PhysicsDomain &domain, bool synchronous)
                     return false;
                 }
             }
+            if (domain.nativeRuntime) {
+                if (!AdvanceGpuJob(domain, synchronous) || !domain.PublishInxPhyGpuFixed())
+                    return false;
+                AcceptStaticFixedMoves(domain);
+                domain.stepCompleted = true;
+                return true;
+            }
             if (domain.gpuRegistered && !AdvanceGpuJob(domain, synchronous))
                 return false;
             FinishFixed(domain);
@@ -1939,6 +2036,8 @@ bool PhysicsWorld::HasCpuControl(const PhysicsDomain &domain) const noexcept
 
 bool PhysicsWorld::HasRunningGpuFixed(const PhysicsDomain &domain) const noexcept
 {
+    if (domain.nativeRuntime)
+        return domain.nativeFixedAdmission.has_value() && !domain.nativeRuntime->HasPublication();
     return domain.solverStarted && domain.gpuRegistered && m_gpuScene->HasRunningFixedTick(domain.owner);
 }
 
@@ -1973,6 +2072,21 @@ void PhysicsWorld::DrainGpuSource(PhysicsDomain &domain) const
 }
 bool PhysicsWorld::AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const
 {
+    if (domain.nativeRuntime) {
+        auto &runtime = *domain.nativeRuntime;
+        if (!runtime.HasPublication()) {
+            const auto availability = [this] { return Availability(*m_gpuHost); };
+            if (synchronous) {
+                m_gpuWork->DrainRequired(runtime.SourceId(), availability, [&](auto source, auto timeout) {
+                    return source == runtime.SourceId() ? runtime.WaitForProgress(timeout)
+                                                        : FrameWorkWaitResult::Blocked;
+                });
+            } else if (m_gpuWork->IsActive()) {
+                (void)m_gpuWork->AdvanceDependency(runtime.SourceId(), availability);
+            }
+        }
+        return runtime.HasPublication();
+    }
     // A published World has already released its writer. Its consumer must not
     // drive the shared GPU source again while another World owns the next job.
     if (m_gpuScene->IsWriterFor(domain.owner)) {
@@ -2043,7 +2157,7 @@ void PhysicsWorld::ServiceGpuWork()
         return;
     ServiceGpuRetirements();
     auto &domain = CurrentDomain();
-    if (!domain.gpuRegistered || domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
+    if (domain.nativeRuntime || !domain.gpuRegistered || domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
         return;
     try {
         // A public host opportunity can continue this already admitted prefix
@@ -2078,7 +2192,7 @@ void PhysicsWorld::RefreshRenderPoses()
             throw;
         }
     }
-    if (!domain.gpuRegistered || !m_gpuRenderProgram)
+    if (domain.nativeRuntime || !domain.gpuRegistered || !m_gpuRenderProgram)
         return;
     ServiceGpuWork();
     if (domain.controlPending || domain.stepPending || SceneManager::Instance().HasPendingFixedStep())
@@ -2132,7 +2246,7 @@ bool PhysicsWorld::ServicePausedAuthorPresentation()
         RefreshBodySurfaces(domain);
         ApplyCpuControl(domain);
     };
-    if (!domain.gpuRegistered) {
+    if (domain.nativeRuntime || !domain.gpuRegistered) {
         try {
             if (domain.stepPending && !domain.stepCompleted && !AdvanceFixedStep(domain, false))
                 return false;
@@ -2191,6 +2305,14 @@ bool PhysicsWorld::ServicePausedAuthorPresentation()
 void PhysicsWorld::CancelPendingStep() noexcept
 {
     auto &domain = CurrentDomain();
+    domain.RetireInxPhyGpuFixed();
+    if (domain.nativeRuntime) {
+        auto &rendering = domain.rendering;
+        rendering.bindings.Clear();
+        rendering.pending.reset();
+        rendering.ready.reset();
+        rendering.checkedKeys.reset();
+    }
     GpuPublicationReader::Cancel(domain.participantInitialization);
     GpuPublicationReader::Cancel(domain.participantOutput);
     RetireGpuPartition(domain);
@@ -3777,7 +3899,7 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
             return *cached;
     if (!sleeping && domain.presentationPoseReadDepth)
         throw PhysicsPresentationPosePending{};
-    if (ReadBodyBackend(domain, id) == Backend::Cpu) {
+    if (!domain.nativeRuntime && ReadBodyBackend(domain, id) == Backend::Cpu) {
         RunCpuControl(domain);
         const auto state = domain.cpuScene->ReadMotionState(id, fields, sleeping);
         if (static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All))
@@ -3791,22 +3913,36 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
         readFields |= static_cast<uint32_t>(PresentationPoseFields);
     const auto requested = static_cast<PhysicsStateFields>(readFields);
     std::exception_ptr error;
-    RunGpuPublicationRead(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        return PrepareJoltGpuQueryWork(
-            [&]() -> JoltGpuControlWork {
-                const auto slot = publication->directory->FindBodySlot(id);
-                if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
-                    throw JoltGpuQueryRequestError("Physics state requires an accepted live body");
-                const auto &identity = *publication->directory->actors[slot];
-                generation = domain.queryGeneration.load(std::memory_order_acquire) +
-                             static_cast<uint64_t>(domain.controlNumericalChange);
-                read = PhysicsGpuMotionRead::Prepare(*m_gpuHost, ScenePoseSource(*publication),
-                                                     {SceneMotionBinding(*publication, identity)}, requested,
-                                                     sleeping != nullptr);
-                return read.packet;
-            },
-            error);
-    });
+    if (domain.nativeRuntime) {
+        if (domain.stepPending && !domain.stepCompleted)
+            const_cast<PhysicsWorld *>(this)->CompleteDomainStep(domain);
+        const auto &publication = domain.nativeFixedPublication;
+        if (!publication)
+            throw std::logic_error("inxphygpu motion reads require a published scene state");
+        auto motion = publication->GatherMotion(0, {id});
+        generation = domain.queryGeneration.load(std::memory_order_acquire);
+        read = PhysicsGpuMotionRead::Prepare(*m_gpuHost, motion.poses, std::move(motion.bodies), requested,
+                                             sleeping != nullptr);
+        if (read.packet)
+            const_cast<PhysicsWorld *>(this)->EnsureGpuPublicationReader().Run(read.packet);
+    } else {
+        RunGpuPublicationRead(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+            return PrepareJoltGpuQueryWork(
+                [&]() -> JoltGpuControlWork {
+                    const auto slot = publication->directory->FindBodySlot(id);
+                    if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
+                        throw JoltGpuQueryRequestError("Physics state requires an accepted live body");
+                    const auto &identity = *publication->directory->actors[slot];
+                    generation = domain.queryGeneration.load(std::memory_order_acquire) +
+                                 static_cast<uint64_t>(domain.controlNumericalChange);
+                    read = PhysicsGpuMotionRead::Prepare(*m_gpuHost, ScenePoseSource(*publication),
+                                                         {SceneMotionBinding(*publication, identity)}, requested,
+                                                         sleeping != nullptr);
+                    return read.packet;
+                },
+                error);
+        });
+    }
     if (error)
         std::rethrow_exception(error);
     FrameWorkOwner::Scope materialize(*m_gpuWork);
@@ -5258,7 +5394,8 @@ void PhysicsWorld::BeginRetireDomain(RuntimeWorld &world) noexcept
 }
 bool PhysicsWorld::CanRetireDomain(const RuntimeWorld &world) const noexcept
 {
-    return !m_gpuScene || m_gpuScene->CanRetire(world);
+    const auto &native = world.physics->nativeRuntime;
+    return (!native || native->CanRetire()) && (!m_gpuScene || m_gpuScene->CanRetire(world));
 }
 void PhysicsWorld::RetireDomain(PhysicsDomain &domain) noexcept
 {

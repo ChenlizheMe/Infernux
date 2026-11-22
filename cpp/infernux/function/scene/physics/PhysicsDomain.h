@@ -46,6 +46,15 @@ enum class PhysicsSceneJointEdit : uint8_t
     Pose = 4,
 };
 
+struct PhysicsGpuRenderJob
+{
+    PhysicsGpuRenderBindings::SnapshotPtr snapshot;
+    std::array<uint64_t, 3> keys{};
+    uint64_t numericalGeneration = 0;
+    std::optional<PhysicsGpuRenderBindings::Export> output;
+    std::shared_ptr<const void> receipt;
+};
+
 /// RuntimeWorld owns its logical cursor and isolated CPU numerical state.
 /// Worker services and GPU storage/submission remain shared between worlds.
 /// RuntimeWorld retirement retains this object until shared-source callbacks settle.
@@ -60,6 +69,9 @@ struct PhysicsDomain final
     void SetGpuJointCollision(PhysicsSceneJointAuthor &joint, bool enabled) noexcept;
     [[nodiscard]] std::vector<physics::inxphygpu::InxPhyGpuSceneJointUpdate> CaptureGpuJointEdits() const;
     void AcceptGpuJointEdits() noexcept;
+    void BeginInxPhyGpuFixed(ContactStreamIdentity, PhysicsFixedInputs input);
+    [[nodiscard]] bool PublishInxPhyGpuFixed();
+    void RetireInxPhyGpuFixed() noexcept;
     RuntimeWorld &owner;
     PhysicsBackend backend = PhysicsBackend::CPU;
     [[nodiscard]] bool UsesGpu() const noexcept;
@@ -158,21 +170,20 @@ struct PhysicsDomain final
     bool contactEventStreamEnabled = false, contactImpulseStreamEnabled = false, contactIncludeTriggers = true;
     PhysicsContactPublication contacts;
     JoltGpuContactPublication gpuContacts;
+    struct InxPhyGpuFixedAdmission
+    {
+        ContactStreamIdentity identity;
+        PhysicsContactPublication::Policy contacts;
+        std::shared_ptr<PhysicsGpuRenderJob> renderJob;
+    };
+    std::optional<InxPhyGpuFixedAdmission> nativeFixedAdmission;
+    std::shared_ptr<const physics::inxphygpu::InxPhyGpuFixedPublication> nativeFixedPublication;
+    std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneRuntime> nativeRuntime;
     struct RenderState
     {
         using Keys = std::array<uint64_t, 3>;
-        struct Job
-        {
-            PhysicsGpuRenderBindings::SnapshotPtr snapshot;
-            Keys keys{};
-            uint64_t numericalGeneration = 0;
-            std::optional<PhysicsGpuRenderBindings::Export> output;
-            // Compare the accepted receipt by identity, including control
-            // publications that share the same fixed index or device buffer.
-            std::shared_ptr<const void> receipt;
-        };
         PhysicsGpuRenderBindings bindings;
-        std::shared_ptr<Job> pending, ready;
+        std::shared_ptr<PhysicsGpuRenderJob> pending, ready;
         std::optional<Keys> checkedKeys;
     };
     RenderState rendering;

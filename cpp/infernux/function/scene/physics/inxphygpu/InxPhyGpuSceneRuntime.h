@@ -245,6 +245,10 @@ class InxPhyGpuSceneRuntime final
     /// pose edits publish immediately. Joint changes wake their endpoints on integration.
     void BeginEdits(const std::vector<PhysicsSceneBodyCommand> &commands,
                     const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {});
+    [[nodiscard]] bool HasPublication() const noexcept
+    {
+        return m_publication.has_value();
+    }
     [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakePublication();
     [[nodiscard]] std::optional<InxPhyGpuHostBody> ReadHostBody(const InxPhyGpuFixedPublication &publication,
                                                                 uint32_t world, uint32_t engineBody) const;

@@ -46,6 +46,7 @@ class RuntimeWorld;
 enum class PhysicsBackend : uint8_t;
 struct PhysicsDomain;
 struct PhysicsSceneJointAuthor;
+struct PhysicsGpuRenderJob;
 class PhysicsGpuRenderPoses;
 class JoltGpuContactReports;
 class Infernux;
@@ -70,6 +71,7 @@ namespace physics::inxphygpu
 {
 struct InxPhyGpuSceneSetup;
 struct InxPhyGpuFixedPublication;
+class InxPhyGpuSceneRuntime;
 struct InxPhyGpuQueryVolume;
 struct InxPhyGpuRay;
 struct InxPhyGpuDeviceRays;
@@ -746,6 +748,7 @@ class PhysicsWorld
     [[nodiscard]] const PhysicsBodyMotionState *FindCachedMotionState(PhysicsDomain &domain, uint32_t bodyId,
                                                                       PhysicsStateFields fields) const;
     friend class HingeJointBatch;
+    friend struct PhysicsDomain;
     void ReadHingeMotion(const std::vector<HingeJoint *> &joints, float *output) const;
     void SetHingeMotorTargets(const std::vector<HingeJoint *> &joints, const float *targets);
 
@@ -823,6 +826,7 @@ class PhysicsWorld
     bool TryBeginFixed(PhysicsDomain &domain);
     void FinishFixed(PhysicsDomain &domain);
     [[nodiscard]] PhysicsContactPublication::Policy CaptureContactPolicy(const PhysicsDomain &domain) const;
+    [[nodiscard]] std::shared_ptr<PhysicsGpuRenderJob> CaptureGpuRenderJob(PhysicsDomain &, bool numericalChange) const;
     void RunCpuControl(PhysicsDomain &domain) const;
     void ApplyCpuControl(PhysicsDomain &domain) const;
     void CaptureCpuPoses(PhysicsDomain &domain, bool fixed) const;
