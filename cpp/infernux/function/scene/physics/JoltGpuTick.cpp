@@ -38,20 +38,18 @@ class JoltGpuTick::Impl
   public:
     Impl(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs, JoltGpuBroadphase &broadphase,
          JoltGpuNarrowphase &narrowphase, JoltGpuConstraints &constraints, std::function<void()> onFailure,
-         std::shared_ptr<Lane> sharedLane = {}, bool observation = false)
+         std::shared_ptr<Lane> sharedLane = {})
         : work(work), storage(storage), programs(programs), broadphase(broadphase), narrowphase(narrowphase),
           constraints(constraints), host(storage.GetHost()), failureObserver(std::move(onFailure)),
           lane(sharedLane ? std::move(sharedLane) : std::make_shared<Lane>())
     {
         if (lane->members[0]) {
-            if (observation)
-                lane->members[Lane::ObservationSlot] = this;
-            else if (!lane->members[1])
+            if (!lane->members[1])
                 lane->members[1] = this;
             else
                 lane->members.push_back(this);
             sourceId = lane->members[0]->sourceId;
-            isolateParameters = !observation;
+            isolateParameters = true;
             return;
         }
         lane->members[0] = this;
@@ -422,8 +420,7 @@ class JoltGpuTick::Impl
     };
     struct Lane
     {
-        static constexpr size_t ObservationSlot = 2;
-        std::vector<Impl *> members = std::vector<Impl *>(3);
+        std::vector<Impl *> members = std::vector<Impl *>(2);
         bool HasOtherMember() const
         {
             return std::any_of(members.begin() + 1, members.end(), [](auto *member) { return member != nullptr; });
@@ -2521,8 +2518,7 @@ void JoltGpuTick::Impl::Lane::DropShared(Impl *member) noexcept
 {
     // Pressure, numerical cancellation and budget decline may surrender this
     // optional source owner. Accepted packets retain their actual allocations.
-    if (member != members[ObservationSlot])
-        bodyBatchInputs = {};
+    bodyBatchInputs = {};
     if (!prepared || !prepared->Includes(member))
         return;
     if (!prepared->statusRows.empty() && prepared->owner != member) {
@@ -2604,7 +2600,7 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
     for (size_t offset = 0; offset < members.size() && readyUnits.size() < maxTiles; ++offset) {
         const auto slot = (nextHost + offset) % members.size();
         auto *member = members[slot];
-        if (slot == ObservationSlot || !ready(member) || !replaceable(member))
+        if (!ready(member) || !replaceable(member))
             continue;
         if (!readyUnits.empty() && !samePhase(*readyUnits.front().first, *member))
             continue;
@@ -2861,10 +2857,10 @@ JoltGpuTick::JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuP
                                     std::move(failureObserver)))
 {
 }
-JoltGpuTick::JoltGpuTick(JoltGpuTick &owner, std::function<void()> failureObserver, bool observation)
+JoltGpuTick::JoltGpuTick(JoltGpuTick &owner, std::function<void()> failureObserver)
     : m_impl(std::make_unique<Impl>(owner.m_impl->work, owner.m_impl->storage, owner.m_impl->programs,
                                     owner.m_impl->broadphase, owner.m_impl->narrowphase, owner.m_impl->constraints,
-                                    std::move(failureObserver), owner.m_impl->lane, observation))
+                                    std::move(failureObserver), owner.m_impl->lane))
 {
 }
 
@@ -2872,7 +2868,7 @@ JoltGpuTick &JoltGpuTick::GetSharedMember(std::function<void()> failureObserver)
 {
     for (auto &member : m_sharedMembers)
         if (member->CanRetire()) {
-            member->ReleaseObservation();
+            member->ReleaseCompletedOutput();
             member->m_impl->failureObserver = std::move(failureObserver);
             return *member;
         }
@@ -2882,52 +2878,18 @@ JoltGpuTick &JoltGpuTick::GetSharedMember(std::function<void()> failureObserver)
     return result;
 }
 
-JoltGpuTick &JoltGpuTick::GetObservationMember()
-{
-    if (!m_observationMember)
-        m_observationMember.reset(new JoltGpuTick(*this, {}, true));
-    m_observationMember->ReleaseObservation();
-    return *m_observationMember;
-}
-
 void JoltGpuTick::ReleaseBodyBatchInputs() noexcept
 {
     m_impl->lane->bodyBatchInputs = {};
 }
 
-void JoltGpuTick::ReleaseObservation() noexcept
+void JoltGpuTick::ReleaseCompletedOutput() noexcept
 {
     if (!m_impl->CanRetire())
         return;
     m_impl->completedOutput = {};
     if (m_impl->status == Status::Failed || m_impl->status == Status::Cancelled)
         m_impl->status = Status::Idle;
-}
-
-void JoltGpuTick::TracePublicationRead(const char *boundary, uint32_t row) const noexcept
-{
-    try {
-        if (INXLOG_GET_LEVEL() != LOG_DEBUG)
-            return;
-        const auto *a = m_impl->lane->members[0], *b = m_impl->lane->members[1];
-        const auto future = [](const Impl *member) {
-            return member && member->status == Status::Running && !member->controlOnly &&
-                   member->stageCursor.phase != Impl::Phase::Done;
-        };
-        INXLOG_DIAGNOSTIC(
-            "P4_PUBLICATION_READ boundary=", boundary, " row=", row, " slot0_row=", a ? a->selectedRow : UINT32_MAX,
-            " slot0_status=", a ? uint32_t(a->status) : 0,
-            " slot0_phase=", a ? uint32_t(a->stageCursor.phase) : UINT32_MAX,
-            " slot0_substep=", a ? a->stageCursor.substep : 0, " slot0_iteration=", a ? a->stageCursor.iteration : 0,
-            " slot0_local=", a ? a->stageCursor.localFirst : 0, " slot0_accepted=", a ? a->cursor : 0,
-            " slot0_future=", future(a), " slot1_row=", b ? b->selectedRow : UINT32_MAX,
-            " slot1_status=", b ? uint32_t(b->status) : 0,
-            " slot1_phase=", b ? uint32_t(b->stageCursor.phase) : UINT32_MAX,
-            " slot1_substep=", b ? b->stageCursor.substep : 0, " slot1_iteration=", b ? b->stageCursor.iteration : 0,
-            " slot1_local=", b ? b->stageCursor.localFirst : 0, " slot1_accepted=", b ? b->cursor : 0,
-            " slot1_future=", future(b));
-    } catch (...) {
-    }
 }
 
 void JoltGpuTick::SetSourceFocus(JoltGpuTick *member) noexcept
@@ -2938,21 +2900,8 @@ void JoltGpuTick::SetSourceFocus(JoltGpuTick *member) noexcept
 
 FrameWorkWaitResult JoltGpuTick::WaitForSourceProgress(uint64_t maximum)
 {
-    if (m_impl->lane->focus) {
-        const auto focused = m_impl->lane->focus->WaitForProgress(maximum);
-        if (focused != FrameWorkWaitResult::Blocked || !m_observationMember ||
-            m_impl->lane->focus != m_observationMember->m_impl.get())
-            return focused;
-        // A full queue may need an already accepted numerical ticket to retire.
-        // Poll/wait that real predecessor only; never advance its future phases.
-        for (auto *member : m_impl->lane->members)
-            if (member && member != m_impl->lane->focus) {
-                const auto dependency = member->WaitForProgress(maximum);
-                if (dependency != FrameWorkWaitResult::Blocked)
-                    return dependency;
-            }
-        return FrameWorkWaitResult::Blocked;
-    }
+    if (m_impl->lane->focus)
+        return m_impl->lane->focus->WaitForProgress(maximum);
     for (auto *member : m_impl->lane->members)
         if (member) {
             const auto result = member->WaitForProgress(maximum);

@@ -328,14 +328,11 @@ class JoltGpuTick final
   private:
     friend class JoltGpuScene;
     class Impl;
-    explicit JoltGpuTick(JoltGpuTick &owner, std::function<void()> failureObserver, bool observation = false);
-    JoltGpuTick &GetObservationMember();
+    explicit JoltGpuTick(JoltGpuTick &owner, std::function<void()> failureObserver);
     void ReleaseBodyBatchInputs() noexcept;
-    void ReleaseObservation() noexcept;
-    void TracePublicationRead(const char *boundary, uint32_t row) const noexcept;
+    void ReleaseCompletedOutput() noexcept;
     std::unique_ptr<Impl> m_impl;
     std::vector<std::unique_ptr<JoltGpuTick>> m_sharedMembers;
-    std::unique_ptr<JoltGpuTick> m_observationMember;
 };
 
 } // namespace infernux

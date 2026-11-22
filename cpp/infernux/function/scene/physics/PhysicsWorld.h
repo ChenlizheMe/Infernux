@@ -800,6 +800,7 @@ class PhysicsWorld
     PhysicsWorld &operator=(const PhysicsWorld &) = delete;
 
     struct CpuServices;
+    struct GpuPublicationReader;
     enum class Backend : uint8_t
     {
         Cpu,
@@ -969,6 +970,7 @@ class PhysicsWorld
     std::unique_ptr<CpuServices> m_cpuServices;
     std::unique_ptr<rhi::ComputeHost> m_gpuHost;
     FrameWorkOwner *m_gpuWork = nullptr;
+    std::unique_ptr<GpuPublicationReader> m_gpuPublicationReader;
     std::unique_ptr<JoltGpuJoints> m_gpuJoints;
     std::unique_ptr<JoltGpuScene> m_gpuScene;
     std::unique_ptr<PhysicsGpuRenderPoses> m_gpuRenderProgram;

@@ -664,6 +664,137 @@ struct PhysicsWorld::CpuServices
     ObjectLayerPairFilter pairFilter;
     JoltCpuExecution execution;
 };
+
+// Synchronous readers own immutable publication buffers and their own receipts.
+// They can retire a real queue predecessor without advancing another world's solver.
+struct PhysicsWorld::GpuPublicationReader
+{
+    GpuPublicationReader(FrameWorkOwner &owner, rhi::ComputeHost &host) : m_owner(owner), m_host(host)
+    {
+        FrameWorkSource source;
+        source.describe = [this] { return Describe(); };
+        source.advance = [this](bool gpu, uint64_t) { return Advance(gpu); };
+        m_source = owner.AddSource(std::move(source));
+    }
+
+    ~GpuPublicationReader()
+    {
+        m_owner.RemoveSource(m_source);
+    }
+
+    void Run(JoltGpuControlWork work)
+    {
+        if (!work.packet && !work.continueWork)
+            return;
+        if (m_reading)
+            throw std::logic_error("Physics publication read cannot reenter its source");
+        FlagScope reading(m_reading);
+        m_work = std::move(work);
+        try {
+            m_owner.DrainRequired(
+                m_source, [this] { return Availability(m_host); },
+                [this](auto, uint64_t maximum) { return Wait(maximum); });
+        } catch (...) {
+            if (m_receipt)
+                m_receipt->completion.Wait();
+            m_receipt.reset();
+            m_preservation.reset();
+            m_work = {};
+            throw;
+        }
+    }
+
+  private:
+    struct Receipt
+    {
+        rhi::ComputeCompletion completion;
+        uint64_t frame, gpuGrant, transferGrant, bytes;
+    };
+
+    FrameWorkFacts Describe()
+    {
+        FrameWorkFacts facts;
+        if (m_receipt) {
+            facts.pending = true;
+            facts.host.ready = m_receipt->completion.IsComplete();
+        } else if (const auto &packet = Packet()) {
+            facts.pending = true;
+            facts.host.ready = packet->RequiresPreparation() || packet->HasPreservationWork();
+            facts.gpu.ready = !facts.host.ready;
+        } else {
+            facts.pending = facts.host.ready = bool(m_work.continueWork);
+        }
+        return facts;
+    }
+
+    const std::shared_ptr<rhi::PreparedComputeBatch> &Packet() const noexcept
+    {
+        return m_preservation ? m_preservation : m_work.packet;
+    }
+
+    bool Advance(bool gpu)
+    {
+        if (gpu) {
+            const auto &packet = Packet();
+            if (!packet->TrySubmit())
+                return false;
+            const auto bytes = packet->GetTransferBytes();
+            const uint64_t prediction = 4'000 * std::max(uint64_t{1}, packet->GetExecutionSignature().front());
+            m_receipt.emplace(Receipt{packet->GetCompletion(), m_owner.Opportunity(),
+                                      m_owner.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
+                                      bytes ? m_owner.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0,
+                                      bytes});
+        } else if (m_receipt) {
+            const auto &receipt = *m_receipt;
+            const auto elapsed = receipt.completion.GetDeviceElapsedNanoseconds();
+            m_owner.ObserveResource(FrameWorkResource::Gpu,
+                                    elapsed ? static_cast<uint64_t>(*elapsed) : receipt.gpuGrant, receipt.frame,
+                                    receipt.gpuGrant);
+            m_owner.ObserveResource(FrameWorkResource::Transfer, receipt.bytes, receipt.frame, receipt.transferGrant);
+            m_receipt.reset();
+            if (m_preservation)
+                m_preservation.reset();
+            else
+                Continue();
+        } else if (m_work.packet) {
+            auto prepared = m_work.packet->PreparePreservation(
+                std::max(uint64_t{4}, m_owner.ResourceRemaining(FrameWorkResource::Transfer)), true);
+            if (!prepared.ready)
+                return false;
+            m_preservation = std::move(prepared.copy);
+        } else {
+            Continue();
+        }
+        return true;
+    }
+
+    void Continue()
+    {
+        auto completed = std::exchange(m_work, {});
+        if (completed.continueWork)
+            m_work = completed.continueWork();
+    }
+
+    FrameWorkWaitResult Wait(uint64_t maximum)
+    {
+        if (const auto &packet = Packet(); packet && packet->RequiresPreparation())
+            if (const auto moved = packet->WaitForPreparation(maximum))
+                return *moved ? FrameWorkWaitResult::Progress : FrameWorkWaitResult::Waiting;
+        const auto ticket = m_receipt ? m_receipt->completion.GetSubmission() : m_host.Queue().GetCapacityPredecessor();
+        if (!ticket.IsValid())
+            return FrameWorkWaitResult::Blocked;
+        return m_host.Queue().WaitFor(ticket, maximum) ? FrameWorkWaitResult::Progress : FrameWorkWaitResult::Waiting;
+    }
+
+    FrameWorkOwner &m_owner;
+    rhi::ComputeHost &m_host;
+    FrameWorkOwner::SourceId m_source = 0;
+    JoltGpuControlWork m_work;
+    std::shared_ptr<rhi::PreparedComputeBatch> m_preservation;
+    std::optional<Receipt> m_receipt;
+    bool m_reading = false;
+};
+
 PhysicsDomain::PhysicsDomain(RuntimeWorld &world) : owner(world), gravity(EngineConfig::Get().physicsGravity)
 {
 }
@@ -852,6 +983,7 @@ JoltGpuScene &PhysicsWorld::EnsureSharedGpuScene()
         m_gpuJoints = std::move(joints);
         m_gpuRenderProgram = std::move(rendering);
         m_gpuContactReports = std::move(reports);
+        m_gpuPublicationReader = std::make_unique<GpuPublicationReader>(*m_gpuWork, host);
         m_gpuScene = std::move(scene);
     }
     return *m_gpuScene;
@@ -958,6 +1090,7 @@ void PhysicsWorld::Shutdown()
     m_gpuPairQuery.reset();
     m_gpuParticleExport.reset();
     m_gpuJoints.reset();
+    m_gpuPublicationReader.reset();
     m_cpuServices.reset();
     m_domains.clear();
     m_gpuHost.reset();
@@ -2099,14 +2232,13 @@ void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consume
         throw std::logic_error("Physics query cannot reenter its synchronous source");
     FlagScope reading(domain.synchronousRead);
     const auto observe = [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        AdmissionScope admission(*m_gpuScene, domain.owner);
         JoltGpuControlWork prepared;
         {
             FrameWorkOwner::Scope preparation(*m_gpuWork);
             if (consumer)
                 prepared = consumer(publication);
         }
-        m_gpuScene->RunPublicationObservation(domain.owner, publication, std::move(prepared));
+        RunPreparedWork(domain, std::move(prepared));
     };
     // Completing an admitted solver can establish the Fixed publication hold.
     if (!IsFixedPublicationHeld(domain))
@@ -2118,12 +2250,7 @@ void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consume
         if (!publication || !publication->isFixedStep || publication->worldId != domain.owner.id ||
             publication->simulationEpoch != domain.stepEpoch || publication->fixedStepIndex != domain.stepIndex)
             throw std::logic_error("Physics query has no matching completed Fixed publication");
-        if (publicationRead)
-            observe(publication);
-        else {
-            FrameWorkOwner::Scope preparation(*m_gpuWork);
-            RunPreparedWork(domain, consumer(publication));
-        }
+        observe(publication);
         return;
     }
     RequireGpu(domain);
@@ -2229,13 +2356,12 @@ void PhysicsWorld::ObserveSpatialGpuQuery(PhysicsDomain &domain,
         throw std::logic_error("Physics query cannot reenter its synchronous source");
     FlagScope reading(domain.synchronousRead);
     const WorldExecutionScope ownerScope(&domain.owner);
-    AdmissionScope admission(*m_gpuScene, domain.owner);
     JoltGpuControlWork prepared;
     {
         FrameWorkOwner::Scope preparation(*m_gpuWork);
         prepared = consumer(publication);
     }
-    m_gpuScene->RunPublicationObservation(domain.owner, publication, std::move(prepared));
+    RunPreparedWork(domain, std::move(prepared));
 }
 
 std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, const JoltCpuQueries::Shape &shape,
@@ -4960,12 +5086,7 @@ namespace infernux
 void PhysicsWorld::RunPreparedWork(PhysicsDomain &domain, JoltGpuControlWork prepared) const
 {
     const WorldExecutionScope ownerScope(&domain.owner);
-    AdmissionScope admission(*m_gpuScene, domain.owner);
-    // The prepared consumer already owns its immutable numerical inputs.
-    while (!m_gpuScene->TryBeginWork(domain.owner, prepared, false))
-        DrainGpuSource(domain);
-    if (!AdvanceGpuJob(domain, true))
-        throw std::runtime_error("GPU result consumer did not complete");
+    m_gpuPublicationReader->Run(std::move(prepared));
 }
 } // namespace infernux
 

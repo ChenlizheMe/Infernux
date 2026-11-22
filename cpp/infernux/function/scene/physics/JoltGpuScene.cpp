@@ -1774,8 +1774,6 @@ class JoltGpuScene::Impl
     {
         domain.closed = true;
         storage.ClearContactHistory(domain.row);
-        if (observationOwner == &domain)
-            observationCursor->Cancel();
         domain.cleanup = true;
         domain.observedTick = domain.tickSerial;
         domain.observedControl = domain.controlSerial;
@@ -1920,10 +1918,6 @@ class JoltGpuScene::Impl
 
     void Service()
     {
-        if (observationOwner && !observationCallActive && observationCursor->CanRetire()) {
-            observationOwner = nullptr;
-            observationPublication.reset();
-        }
         const auto retiredPeer = [this](Partition *peerWriter) {
             auto &domain = *peerWriter;
             auto &cursor = *domain.cursor;
@@ -1987,7 +1981,7 @@ class JoltGpuScene::Impl
             } else
                 PublishWriter(*writer);
         }
-        if (writer || !peerWriters.empty() || observationOwner)
+        if (writer || !peerWriters.empty())
             return;
         for (auto *domain : ordered) {
             if (!domain)
@@ -2058,10 +2052,6 @@ class JoltGpuScene::Impl
     Partition *writer = nullptr;
     std::vector<Partition *> peerWriters;
     RuntimeWorld *requiredWorld = nullptr;
-    Partition *observationOwner = nullptr;
-    JoltGpuTick *observationCursor = nullptr;
-    std::shared_ptr<const Publication> observationPublication;
-    bool observationCallActive = false;
     Partition *pressureDomain = nullptr;
     size_t retiringPartitions = 0;
     WriterKind writerKind = WriterKind::Control;
@@ -2202,7 +2192,7 @@ bool JoltGpuScene::RegisterPartition(RuntimeWorld &world, uint32_t capacity)
         auto &domain = m_impl->Domain(world);
         if (domain.retiring)
             return false;
-        if (domain.cleanup || m_impl->writer == &domain || domain.cursor || m_impl->observationOwner == &domain)
+        if (domain.cleanup || m_impl->writer == &domain || domain.cursor)
             return !domain.closed;
         if (domain.closed) {
             domain.closed = false;
@@ -2452,77 +2442,6 @@ bool JoltGpuScene::IsCurrentPublication(const RuntimeWorld &world,
            publication->simulationEpoch == world.simulation.simulationEpoch &&
            publication->layoutGeneration == m_impl->layoutGeneration &&
            publication->directory == m_impl->publicationDirectory;
-}
-
-void JoltGpuScene::RunPublicationObservation(RuntimeWorld &world, const std::shared_ptr<const Publication> &publication,
-                                             JoltGpuControlWork prepared)
-{
-    if (!publication || publication->worldId != world.id ||
-        publication->simulationEpoch != world.simulation.simulationEpoch || !publication->geometry ||
-        (publication->bodyCount && (!publication->bodyStates || !publication->bodyStates->IsFrozen())) ||
-        !publication->jointStream || !publication->jointStream->IsFrozen())
-        throw std::logic_error("Publication read requires its complete immutable World/epoch source");
-    if (!prepared.packet && !prepared.continueWork)
-        return;
-    auto &domain = m_impl->Domain(world);
-    if (domain.closed || !domain.admission)
-        throw std::logic_error("Publication read owner is closed");
-    if (m_impl->observationCallActive)
-        throw std::logic_error("Publication read cannot reenter its shared cursor");
-    auto &read = m_impl->tick.GetObservationMember();
-    auto *previousWorld = m_impl->requiredWorld;
-    m_impl->tick.SetSourceFocus(&read);
-    const auto availability = [this] {
-        return m_impl->storage.GetHost().GetQueuePressure().recordingFrames ? FrameGpuAvailability::ForegroundRecording
-                                                                            : FrameGpuAvailability::Ready;
-    };
-    const auto drain = [&] {
-        m_impl->work.DrainRequired(m_impl->tick.GetSourceId(), availability, [this](auto, uint64_t maximum) {
-            return m_impl->tick.WaitForSourceProgress(maximum);
-        });
-    };
-    const auto finish = [&] {
-        m_impl->observationCallActive = false;
-        if (read.CanRetire()) {
-            read.ReleaseObservation();
-            m_impl->observationOwner = nullptr;
-            m_impl->observationPublication.reset();
-        }
-        SetRequiredWorld(previousWorld);
-    };
-    try {
-        // A previous failed read may still own accepted tickets. Retire only those tickets.
-        if (m_impl->observationOwner) {
-            drain();
-            if (!read.CanRetire())
-                throw std::runtime_error("Previous publication read has not retired");
-            read.ReleaseObservation();
-            m_impl->observationOwner = nullptr;
-            m_impl->observationPublication.reset();
-        }
-        // Read the retained publication and write only private result buffers.
-        m_impl->observationOwner = &domain;
-        m_impl->observationCursor = &read;
-        m_impl->observationPublication = publication;
-        m_impl->observationCallActive = true;
-        JoltGpuTickControl control;
-        control.needsSnapshot = false;
-        JoltGpuControlGroup group;
-        group.prepareWork = [prepared = std::move(prepared)]() mutable { return std::move(prepared); };
-        control.groups.push_back(std::move(group));
-        read.SetAdmissionEnabled(true);
-        read.BeginControl(domain.row, std::move(control));
-        m_impl->tick.TracePublicationRead("before", domain.row);
-        drain();
-        if (!read.IsComplete())
-            throw std::runtime_error("Publication read did not complete its query work");
-        m_impl->tick.TracePublicationRead("after", domain.row);
-        finish();
-    } catch (...) {
-        read.Cancel();
-        finish();
-        throw;
-    }
 }
 
 bool JoltGpuScene::ConsumeCompletedTick(RuntimeWorld &world)
