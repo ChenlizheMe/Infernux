@@ -24,6 +24,7 @@ class JoltCpuScene;
 class JoltCpuControl;
 class PhysicsConstraintOwner;
 struct PhysicsSceneRayPlan;
+struct PhysicsGpuPublicationRequest;
 
 /// RuntimeWorld owns its logical cursor and isolated CPU numerical state.
 /// Worker services and GPU storage/submission remain shared between worlds.
@@ -63,7 +64,7 @@ struct PhysicsDomain final
     std::optional<StartupPrograms> startupPrograms;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::weak_ptr<PhysicsParticipant> participantPreparing;
-    bool participantOutputPending = false;
+    std::shared_ptr<PhysicsGpuPublicationRequest> participantOutput;
     JoltGpuParticipantStages admittedParticipants;
     bool retiring = false;
     Ragdoll *pendingRagdollHead = nullptr, *pendingRagdollTail = nullptr;
@@ -150,6 +151,7 @@ struct PhysicsDomain final
         std::shared_ptr<const JoltGpuScene::Publication> publication;
         uint64_t generation = 0;
         PhysicsGpuMotionRead read;
+        std::shared_ptr<PhysicsGpuPublicationRequest> request;
     };
     std::shared_ptr<PresentationPoseReads> presentationPoseReads;
     uint32_t presentationPoseReadDepth = 0;

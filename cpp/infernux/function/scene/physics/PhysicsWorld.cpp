@@ -48,6 +48,7 @@
 #include <core/config/EngineConfig.h>
 #include <core/log/InxLog.h>
 #include <core/threading/FrameWorkOwner.h>
+#include <deque>
 #include <exception>
 #include <function/renderer/particle/ParticleGpuCollisionScene.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
@@ -665,122 +666,240 @@ struct PhysicsWorld::CpuServices
     JoltCpuExecution execution;
 };
 
-// Synchronous readers own immutable publication buffers and their own receipts.
-// They can retire a real queue predecessor without advancing another world's solver.
-struct PhysicsWorld::GpuPublicationReader
+// Publication work retains its operands and receipt independently of the solver.
+struct PhysicsGpuPublicationRequest
 {
-    GpuPublicationReader(FrameWorkOwner &owner, rhi::ComputeHost &host) : m_owner(owner), m_host(host)
-    {
-        FrameWorkSource source;
-        source.describe = [this] { return Describe(); };
-        source.advance = [this](bool gpu, uint64_t) { return Advance(gpu); };
-        m_source = owner.AddSource(std::move(source));
-    }
-
-    ~GpuPublicationReader()
-    {
-        m_owner.RemoveSource(m_source);
-    }
-
-    void Run(JoltGpuControlWork work)
-    {
-        if (!work.packet && !work.continueWork)
-            return;
-        if (m_reading)
-            throw std::logic_error("Physics publication read cannot reenter its source");
-        FlagScope reading(m_reading);
-        m_work = std::move(work);
-        try {
-            m_owner.DrainRequired(
-                m_source, [this] { return Availability(m_host); },
-                [this](auto, uint64_t maximum) { return Wait(maximum); });
-        } catch (...) {
-            if (m_receipt)
-                m_receipt->completion.Wait();
-            m_receipt.reset();
-            m_preservation.reset();
-            m_work = {};
-            throw;
-        }
-    }
-
-  private:
     struct Receipt
     {
         rhi::ComputeCompletion completion;
         uint64_t frame, gpuGrant, transferGrant, bytes;
     };
 
+    JoltGpuControlWork work;
+    std::shared_ptr<rhi::PreparedComputeBatch> preservation;
+    std::optional<Receipt> receipt;
+    std::exception_ptr error;
+    uint64_t id = 0;
+    bool cancelled = false;
+
+    [[nodiscard]] bool Pending() const noexcept
+    {
+        return receipt || (!cancelled && (work.packet || work.continueWork));
+    }
+
+    [[nodiscard]] const std::shared_ptr<rhi::PreparedComputeBatch> &Packet() const noexcept
+    {
+        return preservation ? preservation : work.packet;
+    }
+};
+
+struct PhysicsWorld::GpuPublicationReader
+{
+    using Request = PhysicsGpuPublicationRequest;
+
+    GpuPublicationReader(FrameWorkOwner &owner, rhi::ComputeHost &host) : m_owner(owner), m_host(host)
+    {
+        FrameWorkSource source;
+        source.describe = [this] { return Describe(); };
+        source.advance = [this](bool gpu, uint64_t token) { return Advance(gpu, token); };
+        m_source = owner.AddSource(std::move(source));
+    }
+
+    ~GpuPublicationReader()
+    {
+        m_owner.RemoveSource(m_source);
+        for (auto &request : m_pending)
+            if (request->receipt)
+                request->receipt->completion.Wait();
+    }
+
+    [[nodiscard]] std::shared_ptr<Request> Enqueue(JoltGpuControlWork work)
+    {
+        auto request = std::make_shared<Request>();
+        request->work = std::move(work);
+        request->id = m_nextRequest++;
+        m_pending.push_back(request);
+        m_owner.Wake(m_source);
+        return request;
+    }
+
+    void Run(JoltGpuControlWork work)
+    {
+        if (!work.packet && !work.continueWork)
+            return;
+        Request request;
+        request.work = std::move(work);
+        Focus focus(*this, request);
+        try {
+            m_owner.DrainRequired(
+                m_source, [this] { return Availability(m_host); },
+                [this, &request](auto, uint64_t maximum) { return Wait(request, maximum); });
+        } catch (...) {
+            if (request.receipt)
+                request.receipt->completion.Wait();
+            throw;
+        }
+        (void)Ready(request);
+    }
+
+    [[nodiscard]] static bool Ready(const Request &request)
+    {
+        if (request.error)
+            std::rethrow_exception(request.error);
+        return !request.Pending();
+    }
+
+    [[nodiscard]] bool Poll(Request &request)
+    {
+        if (Ready(request))
+            return true;
+        Focus focus(*this, request);
+        (void)m_owner.AdvanceDependency(m_source, [this] { return Availability(m_host); });
+        return Ready(request);
+    }
+
+    static void Cancel(std::shared_ptr<Request> &request) noexcept
+    {
+        if (request) {
+            request->cancelled = true;
+            if (!request->receipt) {
+                request->preservation.reset();
+                request->work = {};
+            }
+        }
+        request.reset();
+    }
+
+  private:
+    struct Focus
+    {
+        Focus(GpuPublicationReader &reader, Request &request) : reader(reader)
+        {
+            if (reader.m_focused)
+                throw std::logic_error("Physics publication read cannot reenter its source");
+            reader.m_focused = &request;
+        }
+        ~Focus()
+        {
+            reader.m_focused = nullptr;
+            // A focused drain can make the source go to sleep while async work is queued.
+            if (!reader.m_pending.empty())
+                reader.m_owner.Wake(reader.m_source);
+        }
+        GpuPublicationReader &reader;
+    };
+
+    Request *Current()
+    {
+        if (m_focused)
+            return m_focused;
+        while (!m_pending.empty() && !m_pending.front()->Pending())
+            m_pending.pop_front();
+        return m_pending.empty() ? nullptr : m_pending.front().get();
+    }
+
     FrameWorkFacts Describe()
     {
         FrameWorkFacts facts;
-        if (m_receipt) {
-            facts.pending = true;
-            facts.host.ready = m_receipt->completion.IsComplete();
-        } else if (const auto &packet = Packet()) {
-            facts.pending = true;
+        auto *request = Current();
+        if (!request || !request->Pending())
+            return facts;
+        facts.pending = true;
+        if (request->receipt)
+            facts.host.ready = request->receipt->completion.IsComplete();
+        else if (const auto &packet = request->Packet()) {
             facts.host.ready = packet->RequiresPreparation() || packet->HasPreservationWork();
             facts.gpu.ready = !facts.host.ready;
         } else {
-            facts.pending = facts.host.ready = bool(m_work.continueWork);
+            facts.host.ready = bool(request->work.continueWork);
         }
+        // Both consumers are on a live dependency boundary: presentation or the next fixed step.
+        facts.host.reserved = facts.gpu.reserved = true;
+        facts.host.token = facts.gpu.token = request->id;
         return facts;
     }
 
-    const std::shared_ptr<rhi::PreparedComputeBatch> &Packet() const noexcept
+    bool Advance(bool gpu, uint64_t token)
     {
-        return m_preservation ? m_preservation : m_work.packet;
+        auto *request = Current();
+        if (!request || request->id != token || !request->Pending())
+            return false;
+        try {
+            return Advance(*request, gpu);
+        } catch (...) {
+            request->error = std::current_exception();
+            request->cancelled = true;
+            return true;
+        }
     }
 
-    bool Advance(bool gpu)
+    bool Advance(Request &request, bool gpu)
     {
         if (gpu) {
-            const auto &packet = Packet();
-            if (!packet->TrySubmit())
-                return false;
+            const auto &packet = request.Packet();
             const auto bytes = packet->GetTransferBytes();
             const uint64_t prediction = 4'000 * std::max(uint64_t{1}, packet->GetExecutionSignature().front());
-            m_receipt.emplace(Receipt{packet->GetCompletion(), m_owner.Opportunity(),
-                                      m_owner.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
-                                      bytes ? m_owner.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0,
-                                      bytes});
-        } else if (m_receipt) {
-            const auto &receipt = *m_receipt;
+            if (!m_owner.CanAdmitResource(FrameWorkResource::Gpu, prediction, true) ||
+                (bytes && !m_owner.CanAdmitResource(FrameWorkResource::Transfer, bytes, true)))
+                return false;
+            const auto accept = [&] {
+                request.receipt.emplace(Request::Receipt{
+                    packet->GetCompletion(), m_owner.Opportunity(),
+                    m_owner.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
+                    bytes ? m_owner.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0, bytes});
+            };
+            try {
+                if (!packet->TrySubmit())
+                    return false;
+            } catch (...) {
+                if (packet->GetSubmission().IsValid())
+                    accept();
+                throw;
+            }
+            accept();
+        } else if (request.receipt) {
+            const auto &receipt = *request.receipt;
             const auto elapsed = receipt.completion.GetDeviceElapsedNanoseconds();
             m_owner.ObserveResource(FrameWorkResource::Gpu,
                                     elapsed ? static_cast<uint64_t>(*elapsed) : receipt.gpuGrant, receipt.frame,
                                     receipt.gpuGrant);
             m_owner.ObserveResource(FrameWorkResource::Transfer, receipt.bytes, receipt.frame, receipt.transferGrant);
-            m_receipt.reset();
-            if (m_preservation)
-                m_preservation.reset();
-            else
-                Continue();
-        } else if (m_work.packet) {
-            auto prepared = m_work.packet->PreparePreservation(
+            request.receipt.reset();
+            if (request.cancelled) {
+                request.preservation.reset();
+                request.work = {};
+            } else if (request.preservation) {
+                request.preservation.reset();
+            } else {
+                Continue(request);
+            }
+        } else if (request.work.packet) {
+            auto prepared = request.work.packet->PreparePreservation(
                 std::max(uint64_t{4}, m_owner.ResourceRemaining(FrameWorkResource::Transfer)), true);
             if (!prepared.ready)
                 return false;
-            m_preservation = std::move(prepared.copy);
+            request.preservation = std::move(prepared.copy);
         } else {
-            Continue();
+            Continue(request);
         }
         return true;
     }
 
-    void Continue()
+    static void Continue(Request &request)
     {
-        auto completed = std::exchange(m_work, {});
+        auto completed = std::exchange(request.work, {});
         if (completed.continueWork)
-            m_work = completed.continueWork();
+            request.work = completed.continueWork();
     }
 
-    FrameWorkWaitResult Wait(uint64_t maximum)
+    FrameWorkWaitResult Wait(Request &request, uint64_t maximum)
     {
-        if (const auto &packet = Packet(); packet && packet->RequiresPreparation())
-            if (const auto moved = packet->WaitForPreparation(maximum))
-                return *moved ? FrameWorkWaitResult::Progress : FrameWorkWaitResult::Waiting;
-        const auto ticket = m_receipt ? m_receipt->completion.GetSubmission() : m_host.Queue().GetCapacityPredecessor();
+        if (!request.receipt)
+            if (const auto &packet = request.Packet(); packet && packet->RequiresPreparation())
+                if (const auto moved = packet->WaitForPreparation(maximum))
+                    return *moved ? FrameWorkWaitResult::Progress : FrameWorkWaitResult::Waiting;
+        const auto ticket =
+            request.receipt ? request.receipt->completion.GetSubmission() : m_host.Queue().GetCapacityPredecessor();
         if (!ticket.IsValid())
             return FrameWorkWaitResult::Blocked;
         return m_host.Queue().WaitFor(ticket, maximum) ? FrameWorkWaitResult::Progress : FrameWorkWaitResult::Waiting;
@@ -789,10 +908,9 @@ struct PhysicsWorld::GpuPublicationReader
     FrameWorkOwner &m_owner;
     rhi::ComputeHost &m_host;
     FrameWorkOwner::SourceId m_source = 0;
-    JoltGpuControlWork m_work;
-    std::shared_ptr<rhi::PreparedComputeBatch> m_preservation;
-    std::optional<Receipt> m_receipt;
-    bool m_reading = false;
+    uint64_t m_nextRequest = 1;
+    std::deque<std::shared_ptr<Request>> m_pending;
+    Request *m_focused = nullptr;
 };
 
 PhysicsDomain::PhysicsDomain(RuntimeWorld &world) : owner(world), gravity(EngineConfig::Get().physicsGravity)
@@ -1013,7 +1131,7 @@ void PhysicsWorld::RequireGpu(PhysicsDomain &domain) const
 void PhysicsWorld::RetireIdleGpuPartition(PhysicsDomain &domain)
 {
     if (!domain.gpuRegistered || !domain.bodyIds.empty() || domain.controlPending || domain.waitingForSlot ||
-        domain.participantOutputPending || !domain.participantPreparing.expired())
+        domain.participantOutput || !domain.participantPreparing.expired())
         return;
     if (!domain.particleCollisionConsumer.expired())
         return;
@@ -1034,7 +1152,9 @@ void PhysicsWorld::RetireGpuPartition(PhysicsDomain &domain)
     domain.sceneRays.reset();
     domain.gpuContacts.Close();
     domain.queuedColliderPairs.reset();
-    domain.presentationPoseReads.reset();
+    if (auto pose = std::exchange(domain.presentationPoseReads, {}))
+        GpuPublicationReader::Cancel(pose->request);
+    GpuPublicationReader::Cancel(domain.participantOutput);
     domain.requestedMotion.clear();
     domain.queryGeneration.fetch_add(1, std::memory_order_release);
     auto &rendering = domain.rendering;
@@ -1056,7 +1176,9 @@ void PhysicsWorld::Shutdown()
         domain->rendering.bindings.Clear();
         domain->rendering.pending.reset();
         domain->rendering.ready.reset();
-        domain->presentationPoseReads.reset();
+        if (auto pose = std::exchange(domain->presentationPoseReads, {}))
+            GpuPublicationReader::Cancel(pose->request);
+        GpuPublicationReader::Cancel(domain->participantOutput);
         domain->contacts.Close();
         domain->gpuContacts.Close();
         domain->cpuContacts.Close();
@@ -1595,7 +1717,7 @@ bool PhysicsWorld::ServiceParticipantPreparation()
         if (!value || value->IsRetired() || value->IsReady())
             continue;
         // The same control prefix handles both a first pending partition layout
-        // and an existing row. Pure-query TryBeginWork keeps its original meaning.
+        // and an existing row.
         JoltGpuScene::Consumer initialize = [value](const auto &) { return value->PrepareInitialize(); };
         if (!m_gpuScene->TryBeginControl(domain.owner, domain.owner.simulation.simulationEpoch, std::move(initialize)))
             return false;
@@ -1618,7 +1740,7 @@ bool PhysicsWorld::ServiceParticipantOutputs()
     for (const auto &entry : domain.participants)
         if (const auto owner = entry.lock(); owner && owner->HasPendingOutputs())
             observers.push_back(owner);
-    if (observers.empty() && !domain.participantOutputPending)
+    if (observers.empty() && !domain.participantOutput)
         return true;
     if (!EnsureGpuReady(domain))
         return false;
@@ -1626,10 +1748,10 @@ bool PhysicsWorld::ServiceParticipantOutputs()
     const auto status = m_gpuScene->GetTickStatus(domain.owner);
     if (status == JoltGpuTick::Status::Failed)
         throw std::runtime_error("Participant output source failed");
-    if (domain.participantOutputPending) {
-        if (status != JoltGpuTick::Status::Complete)
+    if (domain.participantOutput) {
+        if (!GpuPublicationReader::Ready(*domain.participantOutput))
             return false;
-        domain.participantOutputPending = false;
+        domain.participantOutput.reset();
     }
     if (domain.stepPending && !domain.stepCompleted) {
         if (!domain.solverStarted || status != JoltGpuTick::Status::Complete)
@@ -1674,11 +1796,7 @@ bool PhysicsWorld::ServiceParticipantOutputs()
     }
     if (!copies.continueWork)
         return true;
-    AdmissionScope admission(*m_gpuScene, domain.owner);
-    FrameWorkOwner::Scope preparation(*m_gpuWork);
-    if (!m_gpuScene->TryBeginWork(domain.owner, copies, false))
-        return false;
-    domain.participantOutputPending = true;
+    domain.participantOutput = m_gpuPublicationReader->Enqueue(std::move(copies));
     return false;
 }
 bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
@@ -1929,36 +2047,6 @@ void PhysicsWorld::ServiceGpuWork()
     if (!m_initialized)
         return;
     ServiceGpuRetirements();
-    if (m_gpuScene && m_gpuWork->IsActive() && !m_gpuWork->IsLate() && m_gpuWork->ServiceRemaining() > 0) {
-        auto *world = m_gpuScene->GetRunningObservationWorld();
-        if (world && world->simulation.isPlaying && !world->handle->destroyRequested &&
-            world->simulation.fixedPhase == RuntimeWorld::FixedPhase::Integration) {
-            auto &dependency = *world->physics;
-            if (!dependency.retiring && dependency.participantOutputPending && !dependency.stepPending) {
-                // Step must preserve an already accepted observation before
-                // admitting its next writer. This is a dependency of that
-                // admitted Fixed even though its solver has not started yet.
-                // Focus the shared source on this exact Work writer and use
-                // only the current pre-render allowance; never drain or Step.
-                const WorldExecutionScope ownerScope(world);
-                struct RequiredWorldScope
-                {
-                    JoltGpuScene &scene;
-                    RuntimeWorld *previous;
-                    ~RequiredWorldScope()
-                    {
-                        scene.SetRequiredWorld(previous);
-                    }
-                } required{*m_gpuScene, m_gpuScene->SetRequiredWorld(world)};
-                try {
-                    (void)AdvanceGpuJob(dependency, false);
-                } catch (...) {
-                    FailStep(dependency);
-                    throw;
-                }
-            }
-        }
-    }
     auto &domain = CurrentDomain();
     if (!domain.gpuRegistered || domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
         return;
@@ -2152,7 +2240,6 @@ void PhysicsWorld::CancelPendingStep() noexcept
     domain.admittedParticipants = {};
     domain.waitingForSlot = false;
     domain.controlPending = domain.controlNumericalChange = false;
-    domain.participantOutputPending = false;
     domain.requestedMotion.clear();
 }
 void PhysicsWorld::FlushAuthoring(PhysicsDomain &domain) const
@@ -3615,9 +3702,8 @@ bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std
         m_gpuWork->ServiceRemaining() <= 0 || !m_gpuWork->ResourceRemaining(FrameWorkResource::Cpu))
         return false;
     constexpr auto fields = PresentationPoseFields;
-    // Pure Work never changes the published numerical owner, contacts or Fixed receipt.
     if (const auto job = domain.presentationPoseReads) {
-        if (!AdvanceGpuJob(domain, false))
+        if (!m_gpuPublicationReader->Poll(*job->request))
             return false;
         domain.presentationPoseReads.reset();
         if (job->publication != publication ||
@@ -3642,7 +3728,6 @@ bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std
     auto job = std::make_shared<PhysicsDomain::PresentationPoseReads>();
     job->publication = publication;
     job->generation = domain.queryGeneration.load(std::memory_order_acquire);
-    AdmissionScope admission(*m_gpuScene, domain.owner);
     FrameWorkOwner::Scope preparation(*m_gpuWork);
     std::vector<PhysicsGpuMotionBinding> bindings;
     bindings.reserve(missing.size());
@@ -3656,10 +3741,7 @@ bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std
         bindings.push_back(SceneMotionBinding(*publication, actor));
     }
     job->read = PhysicsGpuMotionRead::Prepare(*m_gpuHost, ScenePoseSource(*publication), std::move(bindings), fields);
-    // The accepted Work retains every referenced result/batch even if Stop drops the domain slot.
-    auto work = ContinueJoltGpuControlWork(job->read.packet, [job] { return JoltGpuControlWork{}; });
-    if (!m_gpuScene->TryBeginWork(domain.owner, work, false))
-        return false;
+    job->request = m_gpuPublicationReader->Enqueue(job->read.packet);
     domain.presentationPoseReads = std::move(job);
     return false;
 }

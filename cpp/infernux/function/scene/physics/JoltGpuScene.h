@@ -272,7 +272,6 @@ class JoltGpuScene final
                                     ParticipantFactory prepareParticipants = {});
     [[nodiscard]] bool TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer consumer = {},
                                        Consumer finalConsumer = {});
-    [[nodiscard]] bool TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &work, bool needsSnapshot = true);
     // Consume a published serial exactly once; polling a writer is the completion boundary.
     bool ConsumeCompletedTick(RuntimeWorld &world);
     bool ConsumeCompletedControl(RuntimeWorld &world);
@@ -300,7 +299,6 @@ class JoltGpuScene final
     friend class PhysicsWorld;
     friend class SceneManager;
     [[nodiscard]] bool HasRunningFixedTick(const RuntimeWorld &world) const noexcept;
-    [[nodiscard]] RuntimeWorld *GetRunningObservationWorld() const noexcept;
     void RequireParticipantBodies(RuntimeWorld &, const std::shared_ptr<JoltGpuParticipantBodies> &) const;
     bool IsCurrentPublication(const RuntimeWorld &world, const std::shared_ptr<const Publication> &publication) const;
     class Impl;

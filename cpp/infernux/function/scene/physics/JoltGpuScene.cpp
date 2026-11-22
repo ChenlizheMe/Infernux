@@ -1421,7 +1421,6 @@ class JoltGpuScene::Impl
     {
         Tick,
         Control,
-        Work,
         Cancelled,
         Cleanup,
         Retirement
@@ -1691,8 +1690,6 @@ class JoltGpuScene::Impl
     {
         Service();
         if (domain.cursor && domain.status == JoltGpuTick::Status::Running) {
-            if (writer == &domain && writerKind == WriterKind::Work)
-                return false;
             if (domain.memberEpoch != epoch || domain.memberStep != step)
                 throw std::logic_error("GPU member retry changed its fixed identity");
             return true;
@@ -2393,8 +2390,7 @@ bool JoltGpuScene::HasPendingControl(const RuntimeWorld &world) const
     if (!m_impl->domains.count(world.id))
         return false;
     const auto &domain = m_impl->Domain(world);
-    const bool observing = m_impl->writer == &domain && m_impl->writerKind == Impl::WriterKind::Work;
-    return !domain.pending.empty() || (domain.cursor && !observing && !domain.cursor->AreControlInputsAccepted());
+    return !domain.pending.empty() || (domain.cursor && !domain.cursor->AreControlInputsAccepted());
 }
 bool JoltGpuScene::TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
                                 const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer,
@@ -2413,27 +2409,6 @@ bool JoltGpuScene::TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer
         domain.published && domain.published->simulationEpoch == epoch ? domain.published->fixedStepIndex : 0u;
     return m_impl->TryBegin(domain, epoch, step, 0.0f, nullptr, std::move(consumer),
                             [&finalConsumer] { return std::move(finalConsumer); });
-}
-bool JoltGpuScene::TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &value, bool needsSnapshot)
-{
-    m_impl->Service();
-    auto &domain = m_impl->Domain(world);
-    if (m_impl->writer || !m_impl->peerWriters.empty() || domain.closed || !domain.admission ||
-        m_impl->tick.IsPressureActive() || domain.row >= m_impl->storage.GetWorldCount())
-        return false;
-    JoltGpuTickControl control;
-    control.needsSnapshot = needsSnapshot;
-    JoltGpuControlGroup group;
-    group.prepareWork = [value = std::move(value)]() mutable { return std::move(value); };
-    control.groups.push_back(std::move(group));
-    m_impl->writer = &domain;
-    domain.cursor = &m_impl->tick;
-    domain.shareable = false;
-    m_impl->writerKind = Impl::WriterKind::Work;
-    domain.status = JoltGpuTick::Status::Running;
-    m_impl->tick.SetAdmissionEnabled(true);
-    m_impl->tick.BeginControl(domain.row, std::move(control));
-    return true;
 }
 bool JoltGpuScene::IsCurrentPublication(const RuntimeWorld &world,
                                         const std::shared_ptr<const Publication> &publication) const
@@ -2482,17 +2457,6 @@ bool JoltGpuScene::HasRunningFixedTick(const RuntimeWorld &world) const noexcept
            domain.candidate->simulationEpoch == world.simulation.simulationEpoch &&
            domain.candidate->fixedStepIndex == world.simulation.fixedStepIndex &&
            domain.cursor->GetStatus() == JoltGpuTick::Status::Running;
-}
-RuntimeWorld *JoltGpuScene::GetRunningObservationWorld() const noexcept
-{
-    // Work observations own the exclusive writer; numerical peer writers and
-    // the retained publication alone do not establish this dependency.
-    const auto *writer = m_impl->writer;
-    return writer && m_impl->writerKind == Impl::WriterKind::Work && writer->world && writer->published &&
-                   writer->published->simulationEpoch == writer->world->simulation.simulationEpoch && writer->cursor &&
-                   writer->cursor->GetStatus() == JoltGpuTick::Status::Running
-               ? writer->world
-               : nullptr;
 }
 JoltGpuTick::Status JoltGpuScene::GetTickStatus(const RuntimeWorld &world)
 {
