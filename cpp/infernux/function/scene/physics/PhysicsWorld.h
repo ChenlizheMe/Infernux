@@ -254,7 +254,6 @@ class PhysicsWorld
                                                             const std::vector<Rigidbody *> &rigidbodies,
                                                             const PhysicsParticipant::ExchangeStates &exchangeStates);
     /// Existing Host service / Tick source only; never waits for GPU completion.
-    bool TryPrepareStartupPrograms();
     bool ServiceParticipantPreparation();
     bool ServiceParticipantOutputs();
     [[nodiscard]] bool HasActiveParticipants() const;

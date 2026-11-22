@@ -100,12 +100,6 @@ struct PhysicsDomain final
     std::shared_ptr<PhysicsTargetBatch> gpuTargetAuthors;
     bool gpuRegistered = false;
     size_t gpuBodyOwners = 0;
-    struct StartupPrograms
-    {
-        bool gpuBodies = false;
-        bool gpuContacts = false;
-    };
-    std::optional<StartupPrograms> startupPrograms;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::shared_ptr<PhysicsGpuPublicationRequest> participantInitialization;
     std::shared_ptr<PhysicsGpuPublicationRequest> participantOutput;
@@ -182,6 +176,7 @@ struct PhysicsDomain final
     std::shared_ptr<const physics::inxphygpu::InxPhyGpuFixedPublication> nativeFixedPublication;
     std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneRuntime> nativeRuntime;
     std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneRuntime> nativeTopology;
+    uint64_t nativeLayoutEpoch = 0;
     std::vector<std::pair<uint32_t, uint64_t>> nativeTopologyActors;
     bool nativeBodyLayoutDirty = false;
     struct InxPhyGpuEdit

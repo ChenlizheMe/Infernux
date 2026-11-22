@@ -1831,7 +1831,6 @@ void RegisterPhysicsBindings(py::module_ &m)
             return PhysicsWorld::Instance().RegisterParticipant(component, std::move(recipes), std::move(decoded), count,
                                                                  rigidbodies, exchangeStates);
         })
-        .def_static("_prepare_startup_programs", [] { return PhysicsWorld::Instance().TryPrepareStartupPrograms(); })
         .def_static("_participants_ready", [] { return PhysicsWorld::Instance().ServiceParticipantPreparation(); })
         .def_static("_service_participant_outputs", [] { return PhysicsWorld::Instance().ServiceParticipantOutputs(); })
         .def_static(

@@ -148,7 +148,7 @@ bool PhysicsWorld::HasRagdollAssembly(uint64_t id) const
             return false;
         const auto *registration = FindBodyRegistration(member.bodyId);
         if (!registration ||
-            (registration->backend == Backend::Gpu && !view.domain->nativeRuntime && !view.domain->gpuRegistered))
+            (registration->backend == Backend::Gpu && !view.domain->UsesGpu() && !view.domain->gpuRegistered))
             return false;
         if (member.jointId) {
             auto *joint = dynamic_cast<Joint *>(member.joint.GetComponent());
@@ -254,8 +254,7 @@ void PhysicsWorld::ReconcileRagdolls(PhysicsDomain &domain)
                             surfaces[index].push_back(collider);
                 }
                 const auto *registered = FindBodyRegistration(member.bodyId);
-                if (!registered ||
-                    (registered->backend == Backend::Gpu && !domain.nativeRuntime && !domain.gpuRegistered))
+                if (!registered || (registered->backend == Backend::Gpu && !domain.UsesGpu() && !domain.gpuRegistered))
                     view.ready = false;
                 auto *joint = body->GetGameObject()->GetComponent<Joint>();
                 if (!joint || !joint->IsEnabled() || joint->IsDestroyed() || joint->IsBeingDestroyed())
@@ -493,7 +492,7 @@ void PhysicsWorld::QueueRagdollPoseDrives(PhysicsDomain &domain, const std::vect
     if (std::any_of(drives.begin(), drives.end(), [usesGpu](const auto &drive) { return drive.gpu != usesGpu; }))
         throw std::logic_error("Ragdoll drive differs from its Scene physics backend");
     if (usesGpu) {
-        if (!domain.nativeRuntime) {
+        if (!domain.UsesGpu()) {
             if (!domain.gpuRegistered)
                 return;
             std::vector<JoltGpuScene::PoseDriveIntent> gpu;
