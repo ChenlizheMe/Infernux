@@ -233,11 +233,11 @@ class InxPhyGpuSceneRuntime final
                     const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host, bool captureContacts = false,
                     const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {},
                     std::vector<PhysicsFixedInputs> fixedInputs = {});
-    /// Apply body edits at the last accepted simulation time. Force and
-    /// acceleration accumulate device wrenches for the next accepted fixed step.
-    /// Kinematic targets also wait for that step, while pose edits publish immediately.
-    void BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
-                    PublicationConsumer consumer = {});
+    /// Apply world-scoped body and joint edits at each world's accepted simulation time.
+    /// Forces and kinematic targets wait for the next accepted fixed step, while
+    /// pose edits publish immediately. Joint changes wake their endpoints on integration.
+    void BeginEdits(const std::vector<InxPhyGpuSceneBodyCommand> &commands,
+                    const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {});
     [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakePublication();
     [[nodiscard]] std::optional<InxPhyGpuHostBody> ReadHostBody(const InxPhyGpuFixedPublication &publication,
                                                                 uint32_t world, uint32_t engineBody) const;
@@ -309,6 +309,9 @@ class InxPhyGpuSceneRuntime final
     [[nodiscard]] FrameWorkFacts Describe() const;
     void EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
                            std::vector<InxPhyGpuBodyCommand> &out) const;
+    void EncodeJointUpdates(const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
+                            std::vector<InxPhyGpuJointParameterUpdate> &updates,
+                            std::shared_ptr<InxPhyGpuScenePoseTargets> &poses) const;
     [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>>
     KinematicVelocityRows(const std::vector<InxPhyGpuBodyCommand> &commands) const;
     void BeginOperation(Operation operation);

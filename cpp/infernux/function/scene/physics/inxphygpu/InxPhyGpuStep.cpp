@@ -2621,25 +2621,7 @@ InxPhyGpuStep::PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, Inx
             throw std::invalid_argument("inxphygpu fixed inputs require one row per enrolled world");
         m_fixedInputs.Append(updates, fixedInputs, m_substeps.count);
     }
-    std::vector<uint64_t> wakeRows;
-    for (const auto &update : jointUpdates) {
-        for (const auto body : update.dynamicEndpoints) {
-            if (body != NoModelIndex)
-                wakeRows.push_back(uint64_t{update.world} * m_controls.motion.size() + body);
-        }
-    }
-    std::sort(wakeRows.begin(), wakeRows.end());
-    wakeRows.erase(std::unique(wakeRows.begin(), wakeRows.end()), wakeRows.end());
-    m_sceneJoints.Append(updates, std::move(jointUpdates));
-    for (const auto row : wakeRows) {
-        const uint32_t jointEdited = 1;
-        auto &bytes = updates
-                          .emplace_back(rhi::ComputeBufferUpdate{m_controls.activity,
-                                                                 row * sizeof(ModelWords) + 3 * sizeof(uint32_t),
-                                                                 std::vector<uint8_t>(sizeof(jointEdited))})
-                          .data;
-        std::memcpy(bytes.data(), &jointEdited, sizeof(jointEdited));
-    }
+    AppendJointEdits(updates, std::move(jointUpdates));
     if (commands.empty() && publication == InxPhyGpuBodyPublication::None && !captureContacts)
         return Prepare(false, std::move(updates));
     auto dispatches = m_substeps.begin;
@@ -2671,17 +2653,46 @@ InxPhyGpuStep::PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, Inx
     return packet;
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuStep::PrepareEdits(std::vector<InxPhyGpuBodyCommand> commands) const
+std::shared_ptr<rhi::PreparedComputeBatch>
+InxPhyGpuStep::PrepareEdits(std::vector<InxPhyGpuBodyCommand> commands,
+                            std::vector<InxPhyGpuJointParameterUpdate> jointUpdates) const
 {
     if (!m_controls.states)
         throw std::logic_error("inxphygpu step has no rigid body control layout");
     std::vector<rhi::ComputeBufferUpdate> updates;
+    AppendJointEdits(updates, std::move(jointUpdates));
     std::vector<rhi::ComputeDispatchDesc> dispatches;
-    const auto &streams = BodyCommandStorage(commands.size());
-    AppendBodyCommands(std::move(commands), false, streams, updates, dispatches);
-    AppendBodyPublication(dispatches, false);
+    if (!commands.empty()) {
+        const auto &streams = BodyCommandStorage(commands.size());
+        AppendBodyCommands(std::move(commands), false, streams, updates, dispatches);
+        AppendBodyPublication(dispatches, false);
+    }
     auto host = m_work->GetRecipe().GetHost();
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches));
+}
+
+void InxPhyGpuStep::AppendJointEdits(std::vector<rhi::ComputeBufferUpdate> &updates,
+                                     std::vector<InxPhyGpuJointParameterUpdate> jointUpdates) const
+{
+    std::vector<uint64_t> wakeRows;
+    for (const auto &update : jointUpdates) {
+        for (const auto body : update.dynamicEndpoints) {
+            if (body != NoModelIndex)
+                wakeRows.push_back(uint64_t{update.world} * m_controls.motion.size() + body);
+        }
+    }
+    std::sort(wakeRows.begin(), wakeRows.end());
+    wakeRows.erase(std::unique(wakeRows.begin(), wakeRows.end()), wakeRows.end());
+    m_sceneJoints.Append(updates, std::move(jointUpdates));
+    for (const auto row : wakeRows) {
+        const uint32_t jointEdited = 1;
+        auto &bytes = updates
+                          .emplace_back(rhi::ComputeBufferUpdate{m_controls.activity,
+                                                                 row * sizeof(ModelWords) + 3 * sizeof(uint32_t),
+                                                                 std::vector<uint8_t>(sizeof(jointEdited))})
+                          .data;
+        std::memcpy(bytes.data(), &jointEdited, sizeof(jointEdited));
+    }
 }
 
 const InxPhyGpuStep::BodyCommandStreams &InxPhyGpuStep::BodyCommandStorage(size_t count) const

@@ -355,7 +355,8 @@ class InxPhyGpuStep
     /// Absolute edits and impulses publish new poses at the current fixed time.
     /// Time-dependent force and movement commands are admitted by the fixed step.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
-    PrepareEdits(std::vector<InxPhyGpuBodyCommand> commands) const;
+    PrepareEdits(std::vector<InxPhyGpuBodyCommand> commands,
+                 std::vector<InxPhyGpuJointParameterUpdate> jointUpdates = {}) const;
 
     /// A reporting step appends the world counts to its readbacks. Read only
     /// accepted worlds' populated ranges before issuing another step.
@@ -468,6 +469,8 @@ class InxPhyGpuStep
     uint32_t AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> commands, bool integrate,
                                 const BodyCommandStreams &streams, std::vector<rhi::ComputeBufferUpdate> &updates,
                                 std::vector<rhi::ComputeDispatchDesc> &dispatches) const;
+    void AppendJointEdits(std::vector<rhi::ComputeBufferUpdate> &updates,
+                          std::vector<InxPhyGpuJointParameterUpdate> jointUpdates) const;
     void AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> &dispatches, bool includeStatus) const;
 
     InxPhyGpuStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,

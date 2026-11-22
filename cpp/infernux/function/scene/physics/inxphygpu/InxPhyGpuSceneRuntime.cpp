@@ -550,6 +550,29 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
             actions.push_back({world, body, InxPhyGpuBodyCommandKind::ApplyPendingWrench});
     }
     std::vector<InxPhyGpuJointParameterUpdate> updates;
+    std::shared_ptr<InxPhyGpuScenePoseTargets> poses;
+    EncodeJointUpdates(jointUpdates, updates, poses);
+    BeginOperation({std::move(identities),
+                    std::move(actions),
+                    std::move(updates),
+                    host,
+                    captureContacts,
+                    std::move(consumer),
+                    true,
+                    std::move(fixedInputs),
+                    std::move(poses),
+                    {},
+                    {},
+                    std::move(velocities)});
+}
+
+void InxPhyGpuSceneRuntime::EncodeJointUpdates(const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
+                                               std::vector<InxPhyGpuJointParameterUpdate> &updates,
+                                               std::shared_ptr<InxPhyGpuScenePoseTargets> &poses) const
+{
+    if (jointUpdates.empty())
+        return;
+    const auto &worlds = m_layout->worlds;
     updates.reserve(jointUpdates.size());
     std::map<std::pair<uint32_t, uint64_t>, std::optional<glm::quat>> poseChanges;
     for (const auto &update : jointUpdates) {
@@ -612,7 +635,6 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
         }
     }
     // Fold repeated animation writes before touching the resident parameters or waking a body.
-    std::shared_ptr<InxPhyGpuScenePoseTargets> poses;
     std::shared_ptr<InxPhyGpuScenePoseTargets::World> changedWorld;
     uint32_t changedRow = NoModelIndex;
     for (const auto &[key, relative] : poseChanges) {
@@ -642,24 +664,14 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
         updates.push_back({world, joint.poseTargetOffset, relative ? PackPoseTarget(joint, *relative) : ModelWords{},
                            joint.dynamicEndpoints});
     }
-    BeginOperation({std::move(identities),
-                    std::move(actions),
-                    std::move(updates),
-                    host,
-                    captureContacts,
-                    std::move(consumer),
-                    true,
-                    std::move(fixedInputs),
-                    std::move(poses),
-                    {},
-                    {},
-                    std::move(velocities)});
 }
 
-void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
+void InxPhyGpuSceneRuntime::BeginEdits(const std::vector<InxPhyGpuSceneBodyCommand> &commands,
+                                       const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
                                        PublicationConsumer consumer)
 {
-    const auto world = m_layout->WorldRow(worldId);
+    if (commands.empty() && jointUpdates.empty())
+        throw std::invalid_argument("inxphygpu scene edit requires body or joint commands");
     std::vector<InxPhyGpuBodyCommand> edits;
     edits.reserve(commands.size());
     std::shared_ptr<InxPhyGpuSceneKinematicTargets> nextTargets;
@@ -669,7 +681,9 @@ void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<Physi
                                              : std::make_shared<InxPhyGpuSceneKinematicTargets>();
         return *nextTargets;
     };
-    for (const auto &command : commands) {
+    for (const auto &entry : commands) {
+        const auto world = m_layout->WorldRow(entry.worldId);
+        const auto &command = entry.command;
         const auto body = m_layout->worlds[world].BodyRow(command.bodyId);
         if (!body)
             throw std::invalid_argument("inxphygpu scene edit requires an accepted body in the selected world");
@@ -704,8 +718,6 @@ void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<Physi
         }
         EncodeBodyCommand(world, command, edits);
     }
-    if (edits.empty() && !nextTargets)
-        throw std::invalid_argument("inxphygpu scene edit requires at least one body command");
     using Kind = InxPhyGpuBodyCommandKind;
     std::set pending(m_pendingWrenchRows.begin(), m_pendingWrenchRows.end());
     for (const auto &edit : edits) {
@@ -718,15 +730,18 @@ void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<Physi
     if (nextTargets)
         targets = nextTargets->rows.empty() ? nullptr : std::move(nextTargets);
     auto velocities = KinematicVelocityRows(edits);
+    std::vector<InxPhyGpuJointParameterUpdate> updates;
+    std::shared_ptr<InxPhyGpuScenePoseTargets> poses;
+    EncodeJointUpdates(jointUpdates, updates, poses);
     BeginOperation({{},
                     std::move(edits),
-                    {},
+                    std::move(updates),
                     false,
                     false,
                     std::move(consumer),
                     false,
                     {},
-                    {},
+                    std::move(poses),
                     {pending.begin(), pending.end()},
                     std::move(targets),
                     std::move(velocities)});
@@ -1045,14 +1060,13 @@ bool InxPhyGpuSceneRuntime::Advance(bool gpu, uint64_t token)
         m_packetKind = Packet::Fixed;
         m_operation->commands.clear();
         m_operation->jointUpdates.clear();
-    } else if (m_operation->commands.empty()) {
+    } else if (m_operation->commands.empty() && m_operation->jointUpdates.empty()) {
         auto result = CapturePublication(m_step->BodyStates()->GetLastWriteSubmission());
         result.worlds = m_acceptedWorlds;
         PrepareConsumer(std::move(result));
     } else {
-        m_packet = m_step->PrepareEdits(m_operation->commands);
+        m_packet = m_step->PrepareEdits(std::move(m_operation->commands), std::move(m_operation->jointUpdates));
         m_packetKind = Packet::Edit;
-        m_operation->commands.clear();
     }
     ++m_generation;
     return true;
