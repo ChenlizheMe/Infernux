@@ -258,7 +258,8 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
                                              const ModelVector &gravity, InxPhyGpuCollisionCapacity collisionCapacity,
                                              const InxPhyGpuContactSolver &solver, uint32_t commandCapacity,
                                              bool contactReports, uint32_t substeps, InxPhyGpuRayBatchLayout rayLayout,
-                                             const InxPhyGpuFixedPublication *previous)
+                                             const InxPhyGpuFixedPublication *previous,
+                                             const InxPhyGpuSceneMotionSeed *acceptedMotion)
     : m_work(work), m_host(host), m_target(target), m_bodyCount(scene.model.dimensions.state[2]),
       m_contactReportsConfigured(contactReports)
 {
@@ -357,7 +358,38 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
         layout->worlds.push_back(std::move(world));
     }
     InxPhyGpuStateHandoff handoff;
-    if (previous) {
+    if (acceptedMotion) {
+        if (previous || worlds.size() != 1 || acceptedMotion->bodies.size() != scene.bodies.size() ||
+            acceptedMotion->identity.worldId != m_acceptedWorlds[0].identity.worldId ||
+            acceptedMotion->identity.simulationEpoch != m_acceptedWorlds[0].identity.simulationEpoch ||
+            acceptedMotion->identity.fixedStepIndex > UINT32_MAX || acceptedMotion->poses.firstRow > UINT32_MAX / 4u ||
+            acceptedMotion->poses.bodyCount > UINT32_MAX / 4u - acceptedMotion->poses.firstRow)
+            throw std::invalid_argument("inxphygpu accepted motion does not match the enrolled scene");
+        const auto step = static_cast<uint32_t>(acceptedMotion->identity.fixedStepIndex);
+        m_acceptedWorlds[0] = {acceptedMotion->identity, acceptedMotion->fixedTime, 0, step};
+        handoff.addresses.resize(m_bodyCount, NoModelIndex);
+        handoff.addresses[0] = 0;
+        auto &seed = handoff.motionSeed.emplace();
+        seed.poses = acceptedMotion->poses;
+        seed.activity = acceptedMotion->activity;
+        seed.rows.resize(m_bodyCount, {0u, 0u, 0u, NoModelIndex});
+        std::memcpy(seed.rows[0].data(), &acceptedMotion->fixedTime, sizeof(float));
+        seed.rows[0][2] = step;
+        seed.rows[0][3] = static_cast<uint32_t>(acceptedMotion->poses.firstRow);
+        for (size_t author = 0; author < acceptedMotion->bodies.size(); ++author) {
+            const auto &binding = acceptedMotion->bodies[author];
+            const auto row = scene.bodies[author].bodyRow;
+            if (binding.id != layout->worlds[0].bodies[row].bodyId)
+                throw std::invalid_argument("inxphygpu motion seed has a different author body order");
+            if (binding.row == NoModelIndex)
+                continue;
+            if (binding.row >= acceptedMotion->poses.bodyCount)
+                throw std::invalid_argument("inxphygpu motion seed body exceeds the accepted pose range");
+            handoff.addresses[row] = 5 * row;
+            std::memcpy(seed.rows[row].data(), binding.centerOffset.data(), 3 * sizeof(float));
+            seed.rows[row][3] = static_cast<uint32_t>(acceptedMotion->poses.firstRow) + binding.row;
+        }
+    } else if (previous) {
         InxPhyGpuScenePoseTargets retained;
         InxPhyGpuSceneKinematicTargets retainedKinematic;
         if (previous->m_poseTargets)

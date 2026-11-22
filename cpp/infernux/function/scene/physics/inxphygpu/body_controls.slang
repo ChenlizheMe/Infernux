@@ -71,6 +71,9 @@ struct SavedMotion
 [[vk::binding(23, 0)]] RWStructuredBuffer<SceneBodyActivity> bodyActivity;
 [[vk::binding(24, 0)]] RWStructuredBuffer<float> pendingWrenches;
 [[vk::binding(25, 0)]] StructuredBuffer<float> previousWrenches;
+[[vk::binding(26, 0)]] StructuredBuffer<uint4> motionSeedRows;
+[[vk::binding(27, 0)]] StructuredBuffer<uint4> motionSeedActivity;
+[[vk::binding(28, 0)]] RWStructuredBuffer<uint4> motionSeedOutput;
 
 float4 conjugate(float4 rotation)
 {
@@ -109,6 +112,40 @@ uint2 freeAddresses(ModelDimensions size, BodyModel body, uint world)
 float3 centerOffset(BodyModel body, Pose pose)
 {
     return rotateVector(body.inertialPosition.xyz, pose.rotation);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void pack_accepted_motion(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= model[0].state.z)
+        return;
+    const uint output = 5 * id.x;
+    const uint4 row = motionSeedRows[id.x];
+    uint4 position = uint4(0), rotation = uint4(0), center = uint4(0), linear = uint4(0), angular = uint4(0);
+    if (id.x == 0)
+    {
+        position = row;
+        position.w = 0;
+    }
+    else if (row.w != NoIndex)
+    {
+        const uint input = 4 * row.w;
+        const float4 q = asfloat(previousStates[input + 1]).wxyz;
+        const float3 com = asfloat(previousStates[input].xyz);
+        const float3 origin = com - rotateVector(asfloat(row.xyz), q);
+        const bool sleeping = motionSeedActivity[row.w - motionSeedRows[0].w].x == 0;
+        position = asuint(float4(origin, 0.0));
+        rotation = asuint(q);
+        center = asuint(float4(com, sleeping ? 1.0 : 0.0));
+        linear = uint4(previousStates[input + 2].xyz, 0);
+        angular = uint4(previousStates[input + 3].xyz, 0);
+    }
+    motionSeedOutput[output] = position;
+    motionSeedOutput[output + 1] = rotation;
+    motionSeedOutput[output + 2] = center;
+    motionSeedOutput[output + 3] = linear;
+    motionSeedOutput[output + 4] = angular;
 }
 
 [shader("compute")]

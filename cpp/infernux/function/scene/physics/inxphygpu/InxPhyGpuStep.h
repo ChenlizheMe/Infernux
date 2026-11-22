@@ -289,6 +289,14 @@ struct PreparedInxPhyGpuStep
 
 struct InxPhyGpuStateHandoff
 {
+    struct MotionSeed
+    {
+        PhysicsGpuPoseSource poses;
+        std::shared_ptr<rhi::ComputeBuffer> activity;
+        // Previous COM offset xyz (float bits), and prior compact body row.
+        // Row zero instead holds the device fixed clock and completed index.
+        std::vector<ModelWords> rows;
+    };
     struct PoseTarget
     {
         uint32_t world, offset;
@@ -301,6 +309,7 @@ struct InxPhyGpuStateHandoff
     std::vector<uint32_t> addresses;
     std::vector<PoseTarget> poseTargets{};
     std::shared_ptr<rhi::ComputeBuffer> pendingWrenches;
+    std::optional<MotionSeed> motionSeed;
 };
 
 struct InxPhyGpuJointMotion
