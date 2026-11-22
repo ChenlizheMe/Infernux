@@ -12,6 +12,13 @@ StructuredBuffer<uint> joint_query_rows;
 StructuredBuffer<JointPoseDrive> joint_pose_drives;
 RWStructuredBuffer<JointReadback> joint_motion;
 
+struct SceneJointMotion
+{
+    float4 coordinate;
+    float4 orientation;
+};
+RWStructuredBuffer<SceneJointMotion> joint_motion_values;
+
 void jph_update_joint_state(JointFixedAuthor a, inout JointFixedState state, uint flags)
 {
     if (state.flags.x == 0u || state.flags.y != JointStatusSuccess) return;
@@ -383,7 +390,9 @@ void read_joint_motion(uint3 tid : SV_DispatchThreadID)
             }
         }
     }
-    joint_motion[row] = result;
+    const float4 coordinate = result.status.x == JointStatusSuccess ? result.values
+        : float4(asfloat(0x7fc00000u), 0.0f, 0.0f, 0.0f);
+    joint_motion_values[row] = {coordinate, result.orientation.wxyz};
 }
 
 groupshared uint joint_status_values[64];

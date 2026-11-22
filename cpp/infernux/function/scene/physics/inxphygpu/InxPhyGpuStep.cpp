@@ -37,7 +37,6 @@ static_assert(sizeof(ModelJointVectors) == 32);
 static_assert(sizeof(ModelWords) == 16 && sizeof(ModelVector) == 16);
 static_assert(sizeof(InxPhyGpuDistanceSpring) == 8);
 static_assert(sizeof(InxPhyGpuBodyState) == 80);
-static_assert(sizeof(InxPhyGpuJointMotion) == 32);
 static_assert(sizeof(InxPhyGpuContactReport) == 96);
 static_assert(static_cast<uint32_t>(ForceMode::Force) == 0 && static_cast<uint32_t>(ForceMode::Acceleration) == 1 &&
               static_cast<uint32_t>(ForceMode::Impulse) == 2 && static_cast<uint32_t>(ForceMode::VelocityChange) == 3);
@@ -3009,16 +3008,8 @@ std::shared_ptr<rhi::ComputeBuffer> InxPhyGpuStep::BodyStates() const noexcept
     return m_controls.states;
 }
 
-std::vector<InxPhyGpuJointMotion> InxPhyGpuPreparedJointMotion::ReadHostMotion() const
-{
-    std::vector<InxPhyGpuJointMotion> result(count);
-    if (count != 0)
-        packet->Readback(0)->ReadInto(result.data(), uint64_t{count} * sizeof(InxPhyGpuJointMotion));
-    return result;
-}
-
-InxPhyGpuPreparedJointMotion InxPhyGpuStep::PrepareJointMotion(const PhysicsGpuPoseSource &source,
-                                                               const std::vector<uint32_t> &rows, bool readback) const
+PhysicsGpuJointMotionRead InxPhyGpuStep::PrepareJointMotion(const PhysicsGpuPoseSource &source,
+                                                            const std::vector<uint32_t> &rows, bool readback) const
 {
     if (rows.empty())
         return {};
@@ -3027,7 +3018,7 @@ InxPhyGpuPreparedJointMotion InxPhyGpuStep::PrepareJointMotion(const PhysicsGpuP
         source.rowBytes != bodyBytes)
         throw std::invalid_argument("inxphygpu joint motion requires its native scene body publication");
     const auto count = static_cast<uint32_t>(rows.size());
-    const auto resultBytes = uint64_t{count} * sizeof(InxPhyGpuJointMotion);
+    const auto resultBytes = uint64_t{count} * sizeof(PhysicsGpuJointMotion);
     auto host = m_work->GetRecipe().GetHost();
     using Usage = rhi::BufferUsageFlags;
     auto request = std::make_shared<rhi::ComputeBuffer>(

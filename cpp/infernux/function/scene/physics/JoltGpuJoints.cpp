@@ -26,6 +26,7 @@ enum Port : uint8_t
     States,
     Rows,
     Motion,
+    MotionValues,
     PoseDrive,
     PortCount
 };
@@ -60,6 +61,7 @@ constexpr PortLayout Ports[] = {
      true},
     {"joint_query_rows", sizeof(uint32_t), {}, true, true, true},
     {"joint_motion", sizeof(JointReadback), {"values", "orientation", "status"}, false, false, false},
+    {"joint_motion_values", sizeof(PhysicsGpuJointMotion), {"coordinate", "orientation"}, false, false, false},
     {"joint_pose_drives", sizeof(JointPoseDrive), {"meta", "relative"}, false, false, true},
 };
 constexpr std::array<std::string_view, StageCount> Entries{
@@ -70,8 +72,9 @@ constexpr uint32_t Bit(Port port)
 }
 constexpr std::array<uint32_t, StageCount> StagePorts{
     Bit(Parameters) | Bit(Remap) | Bit(Previous) | Bit(Stream) | Bit(States),
-    Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows) | Bit(Motion), Bit(Parameters) | Bit(Stream) | Bit(Motion),
-    Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows), Bit(Parameters) | Bit(Stream) | Bit(PoseDrive)};
+    Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows) | Bit(MotionValues),
+    Bit(Parameters) | Bit(Stream) | Bit(Motion), Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows),
+    Bit(Parameters) | Bit(Stream) | Bit(PoseDrive)};
 template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 {
     if (count > std::numeric_limits<size_t>::max() / sizeof(T))
@@ -82,10 +85,10 @@ template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
     return result;
 }
 
-std::shared_ptr<rhi::ComputeBuffer> Allocate(rhi::ComputeHost &host, uint64_t bytes)
+std::shared_ptr<rhi::ComputeBuffer> Allocate(rhi::ComputeHost &host, uint64_t bytes,
+                                             rhi::ComputeScalarType scalar = rhi::ComputeScalarType::UInt32)
 {
-    auto buffer =
-        rhi::ComputeBuffer::TryCreatePrivate(host, {bytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
+    auto buffer = rhi::ComputeBuffer::TryCreatePrivate(host, {bytes / sizeof(uint32_t), scalar, 1});
     if (!buffer)
         throw JoltGpuQueryRequestError("Jolt GPU joint preparation exceeds available managed device capacity");
     return buffer;
@@ -621,22 +624,15 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareMobilityReset(JoltGpuStorage &stor
     return {nullptr, std::move(uploads), std::move(dispatches)};
 }
 
-JoltGpuPreparedJointMotion
-JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication> publication,
-                                 const std::vector<uint32_t> &rows, uint32_t kind) const
+PhysicsGpuJointMotionRead JoltGpuJoints::PrepareReadMotion(const JoltGpuScene::Publication &source,
+                                                           const std::vector<uint32_t> &rows, uint32_t kind) const
 {
-    if (!publication)
-        throw JoltGpuQueryRequestError("Jolt GPU joint motion requires one retained publication");
-    const auto groups = Groups(m_host, rows.size());
-    auto result = std::make_shared<JoltGpuJointMotionResult>();
-    result->publication = std::move(publication);
-    result->count = static_cast<uint32_t>(rows.size());
+    if (rows.empty())
+        return {};
     if (kind < JointHinge || kind > JointSixDOF)
         throw JoltGpuQueryRequestError("Jolt GPU motion kind has no readable coordinate");
-    result->kind = kind;
-    if (rows.empty())
-        return {std::move(result), {}};
-    const auto &source = *result->publication;
+    const auto groups = Groups(m_host, rows.size());
+    const auto count = static_cast<uint32_t>(rows.size());
     if (!source.jointLayout || source.jointLayout->Rows().size() != source.GetJoints().size())
         throw JoltGpuQueryRequestError("Joint query lost its retained compact layout");
     ValidateFrozen(m_host, source.jointStream, source.jointLayout->ByteSize(),
@@ -678,11 +674,11 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
         buffers[port] = Allocate(host, data.size());
         updates.push_back({buffers[port], 0, std::move(data)});
     };
-    const JointParams parameters{{source.jointCount, kind, result->count, source.bodyBase}};
+    const JointParams parameters{{source.jointCount, kind, count, source.bodyBase}};
     upload(Parameters, Bytes(&parameters, 1));
     upload(Rows, Bytes(rows.data(), rows.size()));
-    const uint64_t outputBytes = uint64_t(result->count) * sizeof(JointReadback);
-    buffers[Motion] = Allocate(host, outputBytes);
+    const uint64_t outputBytes = uint64_t{count} * sizeof(PhysicsGpuJointMotion);
+    buffers[MotionValues] = Allocate(host, outputBytes, rhi::ComputeScalarType::Float32);
     const auto &program = m_programs[ReadMotion];
     rhi::ComputeDispatchDesc dispatch;
     dispatch.kernel = program.kernel;
@@ -691,18 +687,18 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
     for (const auto port : program.ports) {
         const auto binding = static_cast<uint32_t>(dispatch.buffers.size());
         dispatch.buffers.push_back(buffers[port]);
-        dispatch.bufferAccesses.push_back(port == Motion ? rhi::ComputeBufferAccess::Write
-                                                         : rhi::ComputeBufferAccess::Read);
+        dispatch.bufferAccesses.push_back(port == MotionValues ? rhi::ComputeBufferAccess::Write
+                                                               : rhi::ComputeBufferAccess::Read);
         const rhi::ComputeBindingRange range{binding, 0, buffers[port]->GetByteSize()};
-        if (port == Motion)
+        if (port == MotionValues)
             proof.writes.push_back(range);
         else
             proof.reads.push_back(range);
     }
     dispatch.proof = std::move(proof);
-    result->packet =
-        rhi::PrepareComputeBatch(host, std::move(updates), {std::move(dispatch)}, {{buffers[Motion], 0, outputBytes}});
-    return {result, JoltGpuControlWork{result->packet}};
+    auto packet = rhi::PrepareComputeBatch(host, std::move(updates), {std::move(dispatch)},
+                                           {{buffers[MotionValues], 0, outputBytes}});
+    return {std::move(packet), std::move(buffers[MotionValues]), count};
 }
 
 JoltGpuControlWork JoltGpuJoints::PreparePoseDrive(JoltGpuStorage &storage, std::vector<JointPoseDrive> requests) const
@@ -797,58 +793,6 @@ JoltGpuControlWork JoltGpuJoints::PrepareStatus(std::shared_ptr<const JoltGpuSce
     const auto &program = m_programs[ReadStatus];
     return std::make_shared<JointStatusExecution>(m_host, program.kernel, program.ports, std::move(publication))
         ->Next();
-}
-
-void JoltGpuJointMotionResult::CopyMotion(float *output, size_t valueCount)
-{
-    const size_t width = kind == JointSixDOF ? 7 : kind == JointSwingTwist ? 4 : 2;
-    if (valueCount != size_t(count) * width || (valueCount && !output))
-        throw JoltGpuQueryRequestError("Joint motion output width differs from requested kind");
-    if (!materialized) {
-        if (count) {
-            if (!packet)
-                throw std::logic_error("Joint motion has no packet");
-            auto read = packet->Readback(0);
-            if (!read || !read->IsComplete())
-                throw std::logic_error("Joint motion needs its completed source receipt");
-            values.resize(count);
-            read->ReadInto(values.data(), uint64_t(count) * sizeof(JointReadback));
-        }
-        materialized = true;
-    }
-    const auto finite = [](const Float4 &v) {
-        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && std::isfinite(v.w);
-    };
-    for (const auto &r : values) {
-        const auto &v = r.values, &q = r.orientation;
-        const auto &status = r.status;
-        const bool angular = kind == JointSwingTwist || kind == JointSixDOF;
-        const float norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
-        if (status.x != JointStatusSuccess || status.y || status.z || status.w || !finite(v) || !finite(q) ||
-            (angular ? std::abs(norm - 1.0f) > 1e-4f : (q.x || q.y || q.z || q.w)) ||
-            (kind == JointSwingTwist ? (v.x || v.y || v.z || v.w)
-             : kind == JointSixDOF   ? v.w != 0.0f
-                                     : (v.z || v.w)))
-            throw JoltGpuQueryRequestError("Joint motion has an invalid/failed numerical row");
-    }
-    for (size_t row = 0; row < values.size(); ++row) {
-        const auto &v = values[row].values, &q = values[row].orientation;
-        if (kind == JointSixDOF) {
-            output[row * width] = v.x;
-            output[row * width + 1] = v.y;
-            output[row * width + 2] = v.z;
-        }
-        if (kind == JointSixDOF || kind == JointSwingTwist) {
-            const size_t first = row * width + (kind == JointSixDOF ? 3 : 0);
-            output[first] = q.x;
-            output[first + 1] = q.y;
-            output[first + 2] = q.z;
-            output[first + 3] = q.w;
-        } else {
-            output[row * width] = v.x;
-            output[row * width + 1] = v.y;
-        }
-    }
 }
 
 } // namespace infernux

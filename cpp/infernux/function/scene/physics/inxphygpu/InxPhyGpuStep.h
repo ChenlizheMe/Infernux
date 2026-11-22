@@ -5,6 +5,7 @@
 
 #include "../PhysicsDeviceBufferRange.h"
 #include "../PhysicsFixedInputs.h"
+#include "../PhysicsGpuJointMotion.h"
 #include "../PhysicsGpuPoseSource.h"
 #include "../PhysicsParticipantStage.h"
 #include "InxPhyGpuModel.h"
@@ -323,21 +324,6 @@ struct InxPhyGpuStateHandoff
     std::shared_ptr<rhi::ComputeBuffer> pendingWrenches;
 };
 
-struct InxPhyGpuJointMotion
-{
-    ModelVector coordinate;  // Angle/speed, distance/speed or connected-frame position.
-    ModelVector orientation; // Connected-frame quaternion in wxyz order.
-};
-
-struct InxPhyGpuPreparedJointMotion
-{
-    std::shared_ptr<rhi::PreparedComputeBatch> packet;
-    std::shared_ptr<rhi::ComputeBuffer> motion;
-    uint32_t count = 0;
-
-    [[nodiscard]] std::vector<InxPhyGpuJointMotion> ReadHostMotion() const;
-};
-
 /// Resident state and fixed-step work for worlds that share one compiled model.
 class InxPhyGpuStep
 {
@@ -392,8 +378,8 @@ class InxPhyGpuStep
         return m_controls.pendingWrenches;
     }
 
-    [[nodiscard]] InxPhyGpuPreparedJointMotion
-    PrepareJointMotion(const PhysicsGpuPoseSource &source, const std::vector<uint32_t> &rows, bool readback) const;
+    [[nodiscard]] PhysicsGpuJointMotionRead PrepareJointMotion(const PhysicsGpuPoseSource &source,
+                                                               const std::vector<uint32_t> &rows, bool readback) const;
 
     /// Enqueue after the state to query. Device consumers enqueue before the next
     /// batch that writes the same hit buffer. A CPU publication pins its own snapshot.

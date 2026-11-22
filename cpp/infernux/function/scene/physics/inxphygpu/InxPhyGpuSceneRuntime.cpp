@@ -969,10 +969,10 @@ InxPhyGpuSceneBodyRead InxPhyGpuSceneRuntime::PrepareBodyRead(const InxPhyGpuFix
     return result;
 }
 
-InxPhyGpuPreparedJointMotion InxPhyGpuSceneRuntime::PrepareJointMotion(const InxPhyGpuFixedPublication &publication,
-                                                                       uint32_t world,
-                                                                       const std::vector<uint64_t> &jointIds,
-                                                                       bool readback) const
+PhysicsGpuJointMotionRead InxPhyGpuSceneRuntime::PrepareJointMotion(const InxPhyGpuFixedPublication &publication,
+                                                                    uint32_t world,
+                                                                    const std::vector<uint64_t> &jointIds,
+                                                                    bool readback) const
 {
     if (publication.m_layout != m_layout)
         throw std::invalid_argument("inxphygpu joint motion does not match its scene publication");

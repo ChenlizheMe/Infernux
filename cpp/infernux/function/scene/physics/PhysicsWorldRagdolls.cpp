@@ -1,4 +1,5 @@
 #include "../Collider.h"
+#include "../DistanceJoint.h"
 #include "../GameObject.h"
 #include "../HingeJoint.h"
 #include "../Joint.h"
@@ -8,6 +9,7 @@
 #include "../Scene.h"
 #include "../SixDOFJoint.h"
 #include "../SkeletonInstance.h"
+#include "../SliderJoint.h"
 #include "../SwingTwistJoint.h"
 #include "../Transform.h"
 #include "JoltCpuControl.h"
@@ -52,6 +54,21 @@ uint32_t CpuJointKind(const JoltCpuConstraints::Settings &settings)
     if (std::holds_alternative<SwingTwistJointSettings>(settings))
         return JPH::GPU::JointSwingTwist;
     if (std::holds_alternative<SixDOFJointSettings>(settings))
+        return JPH::GPU::JointSixDOF;
+    return JPH::GPU::JointFixed;
+}
+
+uint32_t SceneJointKind(const Joint &joint)
+{
+    if (dynamic_cast<const HingeJoint *>(&joint))
+        return JPH::GPU::JointHinge;
+    if (dynamic_cast<const SliderJoint *>(&joint))
+        return JPH::GPU::JointSlider;
+    if (dynamic_cast<const DistanceJoint *>(&joint))
+        return JPH::GPU::JointDistance;
+    if (dynamic_cast<const SwingTwistJoint *>(&joint))
+        return JPH::GPU::JointSwingTwist;
+    if (dynamic_cast<const SixDOFJoint *>(&joint))
         return JPH::GPU::JointSixDOF;
     return JPH::GPU::JointFixed;
 }
@@ -284,10 +301,9 @@ void PhysicsWorld::ReconcileRagdolls(PhysicsDomain &domain)
                         view.ready = false;
                         continue;
                     }
-                    const auto &identity = m_gpuScene->GetAuthoredJoint(member.jointId);
-                    if (identity.bodyIdA != member.bodyId || identity.bodyIdB != parentId)
+                    if (joint->m_boundBodyId != member.bodyId || joint->m_boundConnectedBodyId != parentId)
                         throw std::logic_error("Ragdoll GPU joint endpoints differ from their member identities");
-                    member.kind = identity.kind;
+                    member.kind = SceneJointKind(*joint);
                 } else {
                     const auto *jointDomain = FindCpuJointDomain(member.jointId);
                     const auto *identity = jointDomain == &domain && domain.cpuControl

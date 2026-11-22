@@ -640,37 +640,50 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
         throw std::invalid_argument("Joint motion requires output storage");
     if (ids.empty())
         return;
-    JoltGpuPreparedJointMotion prepared;
+    PhysicsGpuJointMotionRead prepared;
     std::exception_ptr requestError;
-    RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        return PrepareJoltGpuQueryWork(
-            [&]() -> JoltGpuControlWork {
-                std::unordered_map<uint64_t, const JoltGpuScene::PublishedJoint *> identities;
-                identities.reserve(publication->GetJoints().size());
-                for (const auto &joint : publication->GetJoints())
-                    identities.emplace(joint.id, &joint);
-                std::vector<uint32_t> rows;
-                rows.reserve(ids.size());
-                for (const auto id : ids) {
-                    const auto found = identities.find(id);
-                    if (found == identities.end() || found->second->kind != kind)
-                        throw JoltGpuQueryRequestError(
-                            "Joint motion requires an accepted identity of the requested kind");
-                    rows.push_back(found->second->row);
-                }
-                prepared = m_gpuJoints->PrepareReadMotion(publication, rows, kind);
-                return std::move(prepared.work);
-            },
-            requestError);
-    });
+    RunControl(
+        domain,
+        [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+            return PrepareJoltGpuQueryWork(
+                [&]() -> JoltGpuControlWork {
+                    std::unordered_map<uint64_t, const JoltGpuScene::PublishedJoint *> identities;
+                    identities.reserve(publication->GetJoints().size());
+                    for (const auto &joint : publication->GetJoints())
+                        identities.emplace(joint.id, &joint);
+                    std::vector<uint32_t> rows;
+                    rows.reserve(ids.size());
+                    for (const auto id : ids) {
+                        const auto found = identities.find(id);
+                        if (found == identities.end() || found->second->kind != kind)
+                            throw JoltGpuQueryRequestError(
+                                "Joint motion requires an accepted identity of the requested kind");
+                        rows.push_back(found->second->row);
+                    }
+                    prepared = m_gpuJoints->PrepareReadMotion(*publication, rows, kind);
+                    return {prepared.packet};
+                },
+                requestError);
+        },
+        true);
     if (requestError)
         std::rethrow_exception(requestError);
-    if (!prepared.result)
+    if (!prepared.packet)
         throw std::runtime_error("GPU joint motion did not produce a result");
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    prepared.result->CopyMotion(output, ids.size() * (kind == JPH::GPU::JointSixDOF       ? 7
-                                                      : kind == JPH::GPU::JointSwingTwist ? 4
-                                                                                          : 2));
+    const auto motion = prepared.ReadHostMotion();
+    const bool sixDOF = kind == JPH::GPU::JointSixDOF;
+    const bool orientation = sixDOF || kind == JPH::GPU::JointSwingTwist;
+    for (const auto &row : motion) {
+        if (sixDOF || !orientation) {
+            const auto count = sixDOF ? 3 : 2;
+            output = std::copy_n(row.coordinate.begin(), count, output);
+        }
+        if (orientation) {
+            output = std::copy(row.orientation.begin() + 1, row.orientation.end(), output);
+            *output++ = row.orientation.front();
+        }
+    }
 }
 
 void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
