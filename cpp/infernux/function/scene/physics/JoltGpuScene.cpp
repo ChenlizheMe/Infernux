@@ -1668,8 +1668,7 @@ class JoltGpuScene::Impl
     {
         const auto &published = domain.published;
         const auto &cache = domain.articulationCache;
-        return domain.world->physics && !domain.world->physics->admittedParticipants &&
-               domain.world->physics->gpuBodyCommands.empty() && domain.pending.empty() &&
+        return domain.world->physics && domain.world->physics->gpuBodyCommands.empty() && domain.pending.empty() &&
                domain.row < storage.GetModel().worlds.size() && storage.GetModel().worlds[domain.row].leaves.w == 0 &&
                (!cache || (!cache->numeric && cache->trees.empty())) && published &&
                published->layoutGeneration == layoutGeneration && published->geometry &&

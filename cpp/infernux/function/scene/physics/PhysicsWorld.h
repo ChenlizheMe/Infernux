@@ -826,7 +826,6 @@ class PhysicsWorld
     void RequireHealthyStep(PhysicsDomain &domain) const;
     void FailStep(PhysicsDomain &domain) noexcept;
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
-    JoltGpuParticipantStages CaptureParticipants(PhysicsDomain &domain);
     bool TryBeginFixed(PhysicsDomain &domain, bool synchronous);
     bool PrepareInxPhyGpuTopology(PhysicsDomain &domain, PhysicsFixedInputs input, uint32_t substeps, bool synchronous);
     bool AdvanceInxPhyGpuEdit(PhysicsDomain &domain, bool synchronous);

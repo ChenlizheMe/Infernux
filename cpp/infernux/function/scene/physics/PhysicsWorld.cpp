@@ -29,7 +29,6 @@
 #include "PhysicsGpuRenderPoses.h"
 #include "PhysicsLayers.h"
 #include "PhysicsMass.h"
-#include "PhysicsParticipantBodies.h"
 #include "PhysicsShapeAuthoring.h"
 #include "PhysicsShapeLeaves.h"
 #include "inxphygpu/InxPhyGpuParticleExport.h"
@@ -598,21 +597,6 @@ Rigidbody &KinematicBody(const PhysicsActorData &actor)
     if (!body || !body->IsEnabled() || !body->IsKinematic())
         throw std::logic_error("Kinematic movement requires an enabled kinematic Rigidbody");
     return *body;
-}
-JoltGpuStepParameters StepParameters(const PhysicsFixedInputs &inputs)
-{
-    const auto &c = EngineConfig::Get();
-    StepParams p{};
-    p.counts.w = static_cast<uint32_t>(c.physicsVelocitySteps);
-    p.solve.x = static_cast<uint32_t>(c.physicsPositionSteps);
-    p.solve.y = static_cast<uint32_t>(c.physicsCollisionSteps);
-    p.gravityDt = {inputs.gravity.x, inputs.gravity.y, inputs.gravity.z, inputs.duration};
-    p.contact = {c.physicsSpeculativeContactDistance, c.physicsPenetrationSlop, c.physicsMaxPenetrationDistance,
-                 c.physicsBaumgarte};
-    p.restitution.x = c.physicsMinVelocityForRestitution;
-    p.restitution.y = c.physicsLinearCastThreshold;
-    p.restitution.z = c.physicsLinearCastMaxPenetration;
-    return JoltGpuStepParameters(p);
 }
 } // namespace
 
@@ -1353,25 +1337,6 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain, bool synchronous)
     }
     QueueStaticFixedMoves(domain);
     auto policy = CaptureContactPolicy(domain);
-    if (domain.gpuRegistered) {
-        QueueColliderPairs(domain);
-        AdmissionScope admission(*m_gpuScene, domain.owner);
-        const bool simulateBodies = domain.gpuBodyOwners || !domain.pendingStaticMoves.empty();
-        if (!m_gpuScene->TryBeginTick(
-                domain.owner, domain.stepEpoch, domain.stepIndex, domain.admittedDeltaTime, *domain.admittedParameters,
-                [this, &domain] { return PrepareRenderConsumer(domain, true); },
-                [this, &domain, policy, simulateBodies](const auto &publication) {
-                    auto observer = simulateBodies ? domain.gpuContacts.Prepare(*m_gpuContactReports, publication,
-                                                                                domain.admittedSubsteps, policy)
-                                                   : JoltGpuScene::ContactObserver{};
-                    observer.simulateRigidBodies = simulateBodies;
-                    return observer;
-                },
-                [&domain] { return domain.admittedParticipants; }))
-            return false;
-        domain.AcceptGpuJointEdits();
-        domain.gpuTargetAuthors.reset();
-    }
     domain.admittedContactPolicy = std::move(policy);
     SealStaticFixedMoves(domain);
     domain.cpuFixedAdmitted = bool(domain.cpuControl);
@@ -1398,21 +1363,10 @@ void PhysicsWorld::FinishFixed(PhysicsDomain &domain)
     const auto substeps = domain.admittedSubsteps;
     if (domain.cpuFixedAdmitted)
         domain.cpuContacts.ValidateCompleted(identity, substeps);
-    std::shared_ptr<const JoltGpuScene::Publication> gpu;
-    if (domain.gpuRegistered) {
-        if (!m_gpuScene->ConsumeCompletedTick(domain.owner))
-            throw std::logic_error("Completed Fixed did not publish its GPU state");
-        gpu = m_gpuScene->GetPublished(domain.owner);
-        domain.gpuContacts.ValidateCompleted(gpu, substeps);
-    }
     AcceptStaticFixedMoves(domain);
     if (domain.admittedContactPolicy.Requested()) {
         domain.contacts.Publish(identity, domain.admittedContactPolicy, substeps, [&](uint32_t substep) {
-            auto frame =
-                domain.cpuFixedAdmitted ? domain.cpuContacts.TakeFrame(substep) : PhysicsContactPublication::Frame{};
-            if (gpu)
-                domain.gpuContacts.AppendFrame(substep, frame);
-            return frame;
+            return domain.cpuFixedAdmitted ? domain.cpuContacts.TakeFrame(substep) : PhysicsContactPublication::Frame{};
         });
     } else {
         domain.contacts.PublishEmpty(identity);
@@ -1423,13 +1377,8 @@ void PhysicsWorld::FinishFixed(PhysicsDomain &domain)
         domain.cpuPublication = identity;
         CaptureCpuPoses(domain, true);
     }
-    if (gpu) {
-        domain.gpuContacts.AcceptCompleted(gpu);
-        ObserveGpuPublication(domain, true);
-    } else {
-        domain.queryGeneration.fetch_add(1, std::memory_order_release);
-        domain.requestedMotion.clear();
-    }
+    domain.queryGeneration.fetch_add(1, std::memory_order_release);
+    domain.requestedMotion.clear();
     domain.stepCompleted = true;
     domain.cpuFixedQueryWrite.reset();
 }
@@ -1818,18 +1767,6 @@ void PhysicsWorld::RefreshBodySurfaces(PhysicsDomain &domain)
     }
     domain.surfaceRevision = revision;
 }
-JoltGpuParticipantStages PhysicsWorld::CaptureParticipants(PhysicsDomain &domain)
-{
-    std::shared_ptr<std::vector<uint32_t>> slots;
-    auto stages = CapturePhysicsParticipants(domain.participants, [&](auto bodyIds) {
-        if (!slots)
-            slots = std::make_shared<std::vector<uint32_t>>();
-        return BindPhysicsParticipantBodies(domain, EnsureSharedGpuScene(), *m_gpuWork, std::move(bodyIds), slots);
-    });
-    stages.gpuBodySlots = std::move(slots);
-    return stages;
-}
-
 std::shared_ptr<PhysicsParticipant>
 PhysicsWorld::RegisterParticipant(const Component &component, PhysicsParticipant::Recipes recipes,
                                   PhysicsParticipant::Controls controls, uint32_t count,
@@ -1961,8 +1898,6 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
             if (domain.stepCompleted) {
                 domain.stepPending = domain.stepCompleted = false;
                 domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Idle;
-                domain.admittedParameters.reset();
-                domain.admittedParticipants = {};
                 return true;
             }
         } else {
@@ -1994,8 +1929,6 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
             return false;
         domain.stepPending = domain.stepCompleted = false;
         domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Idle;
-        domain.admittedParameters.reset();
-        domain.admittedParticipants = {};
         return true;
     } catch (...) {
         FailStep(domain);
@@ -2465,8 +2398,6 @@ void PhysicsWorld::CancelPendingStep() noexcept
     });
     domain.stepPending = domain.stepCompleted = false;
     domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Idle;
-    domain.admittedParameters.reset();
-    domain.admittedParticipants = {};
     domain.waitingForSlot = false;
     domain.controlPending = domain.controlNumericalChange = false;
     domain.requestedMotion.clear();

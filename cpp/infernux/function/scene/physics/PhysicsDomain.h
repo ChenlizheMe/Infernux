@@ -103,7 +103,6 @@ struct PhysicsDomain final
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::shared_ptr<PhysicsGpuPublicationRequest> participantInitialization;
     std::shared_ptr<PhysicsGpuPublicationRequest> participantOutput;
-    JoltGpuParticipantStages admittedParticipants;
     bool retiring = false;
     Ragdoll *pendingRagdollHead = nullptr, *pendingRagdollTail = nullptr;
     bool reconcilingRagdolls = false;
@@ -135,7 +134,6 @@ struct PhysicsDomain final
     bool controlPending = false, controlNumericalChange = false;
     float admittedDeltaTime = 0;
     uint32_t admittedSubsteps = 1;
-    std::optional<JoltGpuStepParameters> admittedParameters;
     JPH::PhysicsSettings admittedCpuSettings;
     JPH::Vec3 admittedGravity = JPH::Vec3::sZero();
     [[nodiscard]] PhysicsFixedInputs AdmittedFixedInputs() const

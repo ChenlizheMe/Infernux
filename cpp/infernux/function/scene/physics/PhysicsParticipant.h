@@ -78,44 +78,11 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     using Controls = std::map<std::string, PhysicsParticipantControl>;
     using ExchangeStates = std::map<std::string, std::pair<std::shared_ptr<PhysicsParticipant>, std::string>>;
     using ControlPayloads = std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>>;
-    struct RigidExchange
-    {
-        using Recipe = std::function<JoltGpuControlWork(std::vector<rhi::ComputeBufferUpdate>,
-                                                        std::vector<rhi::ComputeBufferRead>)>;
-        std::function<JoltGpuControlWork(JoltGpuParticipantRigidPort, const JPH::GPU::StepParams &,
-                                         const std::shared_ptr<rhi::ComputeBuffer> &)>
-            prepare;
-        // The owning GPU Scene orders the motion capture, project recipe
-        // and resident impulse response on the same compute source.
-        std::function<JoltGpuControlWork(const JPH::GPU::StepParams &, const std::shared_ptr<rhi::ComputeBuffer> &,
-                                         const std::shared_ptr<rhi::ComputeBuffer> &, Recipe)>
-            exchange;
-        struct ClosedRounds
-        {
-            std::vector<rhi::ComputeBufferUpdate> updates;
-            std::vector<rhi::ComputeBufferRead> reads;
-            std::vector<rhi::ComputeDispatchDesc> responses;
-            std::function<void(const std::shared_ptr<rhi::PreparedComputeBatch> &)> apply;
-        };
-        // No intermediate native consumer: optional preparation may decline
-        // without submitting, changing the accepted cursor or retaining debt.
-        std::function<std::optional<ClosedRounds>(const JPH::GPU::StepParams &,
-                                                  const std::shared_ptr<rhi::ComputeBuffer> &,
-                                                  const std::shared_ptr<rhi::ComputeBuffer> &, uint32_t)>
-            closeRounds;
-        explicit operator bool() const noexcept
-        {
-            return bool(prepare);
-        }
-    };
-    using RigidFactory = std::function<RigidExchange(std::vector<uint32_t>)>;
     struct Prefix
     {
-        std::shared_ptr<PhysicsParticipant> owner;
         ControlPayloads controls;
         uint32_t count, stages;
         std::vector<uint32_t> rigidBodyIds;
-        RigidExchange rigidExchange;
     };
 
     PhysicsParticipant(const Component &component, Recipes recipes, Controls controls, uint32_t count,
@@ -142,10 +109,6 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     void AcceptControls(const ControlPayloads &values);
     [[nodiscard]] Prefix CapturePrefix();
     [[nodiscard]] JoltGpuControlWork PrepareInitialize();
-    [[nodiscard]] JoltGpuControlWork PrepareStage(PhysicsParticipantStage stage, const JPH::GPU::StepParams &params,
-                                                  float fixedDeltaTime, uint32_t substep, uint32_t iteration,
-                                                  const Prefix &prefix);
-
     struct PreparedStage
     {
         rhi::ComputeHost *host = nullptr;
@@ -168,10 +131,6 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     [[nodiscard]] std::optional<DeviceRigidExchange> PrepareDeviceRigidExchange(const PhysicsParticipantStageInputs &,
                                                                                 const Prefix &, uint32_t runtimeSlot);
 
-    [[nodiscard]] std::optional<JoltGpuControlWork>
-    PrepareClosedRounds(const JPH::GPU::StepParams &, float fixedDeltaTime, uint32_t substep, uint32_t iteration,
-                        uint32_t rounds, const Prefix &, std::function<void(uint32_t)> done);
-
   private:
     struct ExchangeState
     {
@@ -182,11 +141,6 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     void DeclareExchangeStates(const ExchangeStates &states);
     void ReleasePeerExchange();
     void ValidateRigidPorts();
-    [[nodiscard]] JoltGpuControlWork PrepareRecipeStage(PhysicsParticipantStage stage,
-                                                        const PhysicsParticipantStageInputs &inputs,
-                                                        const Prefix &prefix,
-                                                        std::vector<rhi::ComputeBufferUpdate> updates = {},
-                                                        std::vector<rhi::ComputeBufferRead> reads = {});
     [[nodiscard]] JoltGpuControlWork PrepareOutput(const std::shared_ptr<PhysicsParticipantOutput> &capture,
                                                    uint64_t epoch, uint64_t step, bool isFixedStep);
     bool BindInstances();
@@ -221,8 +175,4 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     bool m_ready = false, m_retired = false;
 };
 
-/// A frozen author/control prefix, prepared once when the actual tick is admitted.
-[[nodiscard]] JoltGpuParticipantStages
-CapturePhysicsParticipants(const std::vector<std::weak_ptr<PhysicsParticipant>> &participants,
-                           const PhysicsParticipant::RigidFactory &bindBodies);
 } // namespace infernux
