@@ -292,7 +292,6 @@ class JoltGpuScene::Impl
     struct JointRecord
     {
         PublishedJoint value;
-        PhysicsConstraintOwner *owner = nullptr;
         // Last authored drive intent, not a mirror of device dynamic state.
         std::optional<PoseDriveIntent> poseDrive;
     };
@@ -645,7 +644,7 @@ class JoltGpuScene::Impl
         domain.pending.push_back(std::move(group));
     }
 
-    uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody, JointAuthor author)
+    void CreateJoint(uint64_t id, uint32_t ownerBody, uint32_t connectedBody, JointAuthor author)
     {
         const auto a = RequireSlot(ownerBody);
         const auto b = connectedBody == InvalidBodyId ? InvalidQueryBodySlot : RequireSlot(connectedBody);
@@ -654,7 +653,6 @@ class JoltGpuScene::Impl
         if (ownerBody == connectedBody || !slots[a].authored || (b != InvalidQueryBodySlot && !slots[b].authored))
             throw std::invalid_argument("A GPU joint requires distinct authored body endpoints");
         FlushSceneCommands(*slots[a].partition);
-        const auto id = actors.AllocateJointIdentity();
         author.bodies.x = b;
         author.bodies.y = a;
         author.identity = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), slots[a].partition->row, 0};
@@ -663,13 +661,12 @@ class JoltGpuScene::Impl
         author.scale1() = b == InvalidQueryBodySlot ? Float4{1, 1, 1, 0} : slots[b].authored->rootScale;
         author.scale2() = slots[a].authored->rootScale;
         PublishedJoint value{id, 0, ownerBody, connectedBody, author.bodies.z, author};
-        if (!authoredJoints.emplace(id, JointRecord{value, &owner}).second)
+        if (!authoredJoints.emplace(id, JointRecord{value, {}}).second)
             throw std::logic_error("GPU joint already owns its public identity");
         QueueJointTopology(*slots[a].partition);
         JoltGpuControlGroup wake;
         AddJointWake(wake, value);
         slots[a].partition->pending.push_back(std::move(wake));
-        return id;
     }
 
     void UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update, uint32_t runtimeIntent)
@@ -766,7 +763,6 @@ class JoltGpuScene::Impl
         const auto found = authoredJoints.find(id);
         if (found == authoredJoints.end())
             return;
-        auto *owner = found->second.owner;
         auto &domain = BodyDomain(found->second.value.bodyIdA);
         FlushSceneCommands(domain);
         JoltGpuControlGroup wake;
@@ -774,30 +770,30 @@ class JoltGpuScene::Impl
         authoredJoints.erase(found);
         QueueJointTopology(domain);
         domain.pending.push_back(std::move(wake));
-        owner->OnPhysicsConstraintDestroyed();
+        domain.world->physics->RetireGpuJoint(id);
     }
 
     void DestroyJointsForBody(uint32_t id)
     {
         auto &domain = BodyDomain(id);
         FlushSceneCommands(domain);
-        std::vector<PhysicsConstraintOwner *> owners;
+        std::vector<uint64_t> retired;
         JoltGpuControlGroup wake;
         for (auto it = authoredJoints.begin(); it != authoredJoints.end();) {
             if (it->second.value.bodyIdA == id || it->second.value.bodyIdB == id) {
                 AddJointWake(wake, it->second.value);
-                owners.push_back(it->second.owner);
+                retired.push_back(it->first);
                 it = authoredJoints.erase(it);
             } else {
                 ++it;
             }
         }
-        if (!owners.empty())
+        if (!retired.empty())
             QueueJointTopology(domain);
         if (!wake.commands.empty())
             domain.pending.push_back(std::move(wake));
-        for (auto *owner : owners)
-            owner->OnPhysicsConstraintDestroyed();
+        for (const auto joint : retired)
+            domain.world->physics->RetireGpuJoint(joint);
     }
 
     struct LayoutPlan
@@ -1792,9 +1788,9 @@ class JoltGpuScene::Impl
         for (auto it = authoredJoints.begin(); it != authoredJoints.end();) {
             const auto found = byId.find(it->second.value.bodyIdA);
             if (found != byId.end() && slots[found->second].partition == &domain) {
-                auto *owner = it->second.owner;
+                const auto id = it->first;
                 it = authoredJoints.erase(it);
-                owner->OnPhysicsConstraintDestroyed();
+                domain.world->physics->RetireGpuJoint(id);
             } else
                 ++it;
         }
@@ -2306,9 +2302,9 @@ void JoltGpuScene::StageRetire(uint32_t id)
 {
     m_impl->StageRetire(id);
 }
-uint64_t JoltGpuScene::CreateJoint(PhysicsConstraintOwner &owner, uint32_t a, uint32_t b, JointAuthor author)
+void JoltGpuScene::CreateJoint(uint64_t id, uint32_t a, uint32_t b, JointAuthor author)
 {
-    return m_impl->CreateJoint(owner, a, b, std::move(author));
+    m_impl->CreateJoint(id, a, b, std::move(author));
 }
 JPH::GPU::BodyModel JoltGpuScene::GetAcceptedBodyModel(uint32_t bodyId) const
 {

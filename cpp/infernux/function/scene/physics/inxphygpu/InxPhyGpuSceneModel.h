@@ -148,6 +148,9 @@ struct InxPhyGpuSceneJointReference
     float distance = 0.0f;
 };
 
+using InxPhyGpuSceneJointSettings = std::variant<std::monostate, InxPhyGpuSceneHinge, InxPhyGpuSceneSlider,
+                                                 InxPhyGpuSceneDistance, SwingTwistJointSettings, SixDOFJointSettings>;
+
 struct InxPhyGpuSceneJoint
 {
     uint32_t ownerActor;
@@ -155,9 +158,7 @@ struct InxPhyGpuSceneJoint
     glm::vec3 ownerAnchor{0.0f}; // Baked offset from the owner transform origin, in body axes.
     bool enableCollision = false;
     // This order matches the scene joint kinds in spatial_constraints.slang.
-    std::variant<std::monostate, InxPhyGpuSceneHinge, InxPhyGpuSceneSlider, InxPhyGpuSceneDistance,
-                 SwingTwistJointSettings, SixDOFJointSettings>
-        settings;
+    InxPhyGpuSceneJointSettings settings;
     std::optional<InxPhyGpuSceneJointReference> reference{};
     glm::vec3 ownerLocalAnchor{0.0f};
 };

@@ -45,6 +45,7 @@ class FrameWorkOwner;
 class RuntimeWorld;
 enum class PhysicsBackend : uint8_t;
 struct PhysicsDomain;
+struct PhysicsSceneJointAuthor;
 class PhysicsGpuRenderPoses;
 class JoltGpuContactReports;
 class Infernux;
@@ -787,6 +788,7 @@ class PhysicsWorld
         Gpu
     };
     [[nodiscard]] JointBackend PrepareJointEndpoints(PhysicsDomain &, uint32_t ownerBody, uint32_t connectedBody);
+    uint64_t StageGpuJoint(PhysicsDomain &, PhysicsConstraintOwner &, PhysicsSceneJointAuthor, JPH::GPU::JointAuthor);
     [[nodiscard]] PhysicsDomain *FindCpuJointDomain(uint64_t jointId) const noexcept;
     void RetireCpuJointRoutes(const std::vector<uint64_t> &jointIds) noexcept;
     void RetireCpuJointRoutes(PhysicsDomain &) noexcept;

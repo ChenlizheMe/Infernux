@@ -13,6 +13,7 @@
 #include "PhysicsGpuRenderPoses.h"
 #include "PhysicsParticipant.h"
 #include "PhysicsWorld.h"
+#include "inxphygpu/InxPhyGpuSceneModel.h"
 #include <map>
 #include <mutex>
 #include <set>
@@ -27,6 +28,15 @@ class PhysicsConstraintOwner;
 struct PhysicsSceneRayPlan;
 struct PhysicsGpuPublicationRequest;
 
+struct PhysicsSceneJointAuthor
+{
+    uint32_t ownerBody, connectedBody;
+    glm::vec3 ownerLocalAnchor;
+    bool enableCollision;
+    physics::inxphygpu::InxPhyGpuSceneJointSettings settings;
+    PhysicsConstraintOwner *owner = nullptr;
+};
+
 /// RuntimeWorld owns its logical cursor and isolated CPU numerical state.
 /// Worker services and GPU storage/submission remain shared between worlds.
 /// RuntimeWorld retirement retains this object until shared-source callbacks settle.
@@ -35,6 +45,7 @@ struct PhysicsDomain final
     explicit PhysicsDomain(RuntimeWorld &world);
     ~PhysicsDomain();
     void MarkGpuPoseDiscontinuity(uint32_t bodyId);
+    void RetireGpuJoint(uint64_t id) noexcept;
     RuntimeWorld &owner;
     PhysicsBackend backend = PhysicsBackend::CPU;
     [[nodiscard]] bool UsesGpu() const noexcept;
@@ -54,6 +65,7 @@ struct PhysicsDomain final
     std::optional<float> publishedCpuInterpolationAlpha;
     bool cpuFixedAdmitted = false;
     std::vector<PhysicsSceneBodyCommand> gpuBodyCommands;
+    std::map<uint64_t, PhysicsSceneJointAuthor> gpuJointAuthors;
     // Shared by the queued authored moves and their retained component guards.
     std::shared_ptr<PhysicsTargetBatch> gpuTargetAuthors;
     bool gpuRegistered = false;

@@ -7,20 +7,13 @@
 #include "../BoxCollider.h"
 #include "../Collider.h"
 #include "../Component.h"
-#include "../DistanceJoint.h"
-#include "../FixedJoint.h"
 #include "../GameObject.h"
-#include "../HingeJoint.h"
-#include "../Joint.h"
 #include "../MeshCollider.h"
 #include "../Ragdoll.h"
 #include "../Rigidbody.h"
 #include "../RuntimeWorld.h"
 #include "../Scene.h"
 #include "../SceneManager.h"
-#include "../SixDOFJoint.h"
-#include "../SliderJoint.h"
-#include "../SwingTwistJoint.h"
 #include "../TagLayerManager.h"
 #include "../Transform.h"
 #include "../TransformECSStore.h"
@@ -4122,7 +4115,6 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
 
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     std::vector<InxPhyGpuSceneActor> actors;
-    std::vector<const Joint *> activeJoints;
     std::unordered_map<uint32_t, uint32_t> rowById;
     actors.reserve(ids.size());
     registration.bodies.reserve(ids.size());
@@ -4141,66 +4133,76 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
         registration.bodies.push_back(
             {id, binding.stagedShapeRevision, binding.actor, std::move(prepared.surfaces), bodyTarget});
         actors.push_back(std::move(prepared.actor));
-        for (const auto *joint : actor.owner->GetComponents<Joint>())
-            if (joint->GetPhysicsConstraintId() != 0 && joint->m_boundBodyId == id)
-                activeJoints.push_back(joint);
     }
 
     std::vector<InxPhyGpuSceneJoint> joints;
     std::vector<uint64_t> jointIds;
-    joints.reserve(activeJoints.size());
-    jointIds.reserve(activeJoints.size());
-    for (const auto *joint : activeJoints) {
-        const auto *transform = joint->GetGameObject()->GetTransform();
-        const auto anchor =
-            glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(joint->GetAnchor());
-        const auto connected = joint->m_boundConnectedBodyId;
-        const auto connectedRow = rowById.find(connected);
-        if (connected != UINT32_MAX && connectedRow == rowById.end())
-            continue; // A suspended endpoint owns no solver row in this topology.
-        auto &model =
-            joints.emplace_back(InxPhyGpuSceneJoint{rowById.at(joint->m_boundBodyId),
-                                                    connected == UINT32_MAX ? NoModelIndex : connectedRow->second,
-                                                    anchor,
-                                                    joint->GetEnableCollision(),
-                                                    {}});
-        const auto jointId = joint->GetPhysicsConstraintId();
-        jointIds.push_back(jointId);
-        model.ownerLocalAnchor = joint->GetAnchor();
+    const auto bakeAnchor = [&](uint32_t body, const glm::vec3 &anchor) {
+        const auto *transform = store.GetActor(m_bodyActors.at(body).actor).owner->GetTransform();
+        return glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(anchor);
+    };
+    const auto append = [&](uint64_t id, const PhysicsSceneJointAuthor &joint) {
+        const auto ownerRow = rowById.find(joint.ownerBody);
+        const auto connectedRow = rowById.find(joint.connectedBody);
+        if (ownerRow == rowById.end() || (joint.connectedBody != UINT32_MAX && connectedRow == rowById.end()))
+            return;
+        auto &model = joints.emplace_back(InxPhyGpuSceneJoint{
+            ownerRow->second, joint.connectedBody == UINT32_MAX ? NoModelIndex : connectedRow->second,
+            bakeAnchor(joint.ownerBody, joint.ownerLocalAnchor), joint.enableCollision, joint.settings});
+        model.ownerLocalAnchor = joint.ownerLocalAnchor;
         if (accepted)
-            model.reference = previous->FindJointReference(*accepted, jointId);
-        if (const auto *hinge = dynamic_cast<const HingeJoint *>(joint)) {
-            model.settings =
-                InxPhyGpuSceneHinge{hinge->GetAxis(),
-                                    hinge->GetUseLimits(),
-                                    glm::radians(hinge->GetMinimumAngle()),
-                                    glm::radians(hinge->GetMaximumAngle()),
-                                    {hinge->GetMotorEnabled(), hinge->GetClampedMotorTargetRadians(),
-                                     hinge->GetMotorStiffness(), hinge->GetMotorDamping(), hinge->GetMotorMaxTorque(),
-                                     hinge->GetJointDamping(), hinge->GetFrictionTorque(), hinge->GetArmature()}};
-        } else if (const auto *slider = dynamic_cast<const SliderJoint *>(joint)) {
-            model.settings = InxPhyGpuSceneSlider{slider->GetAxis(), slider->GetUseLimits(),
-                                                  slider->GetMinimumDistance(), slider->GetMaximumDistance()};
-        } else if (const auto *distance = dynamic_cast<const DistanceJoint *>(joint)) {
-            auto connectedAnchor = distance->GetConnectedAnchor();
-            if (connected != UINT32_MAX) {
-                const auto *connectedTransform = store.GetActor(m_bodyActors.at(connected).actor).owner->GetTransform();
-                connectedAnchor = glm::conjugate(connectedTransform->GetWorldRotation()) *
-                                  connectedTransform->TransformVector(connectedAnchor);
-            }
-            model.settings = InxPhyGpuSceneDistance{connectedAnchor,
-                                                    distance->GetAutoDistance(),
-                                                    distance->GetMinimumDistance(),
-                                                    distance->GetMaximumDistance(),
-                                                    distance->GetStiffness(),
-                                                    distance->GetDamping(),
-                                                    distance->GetConnectedAnchor()};
-        } else if (const auto *swing = dynamic_cast<const SwingTwistJoint *>(joint)) {
-            model.settings = swing->m_settings;
-        } else if (const auto *six = dynamic_cast<const SixDOFJoint *>(joint)) {
-            model.settings = six->m_settings;
-        } else if (!dynamic_cast<const FixedJoint *>(joint)) {
-            throw std::invalid_argument(std::string("inxphygpu scene setup does not support ") + joint->GetTypeName());
+            model.reference = previous->FindJointReference(*accepted, id);
+        if (auto *distance = std::get_if<InxPhyGpuSceneDistance>(&model.settings);
+            distance && joint.connectedBody != UINT32_MAX)
+            distance->connectedAnchor = bakeAnchor(joint.connectedBody, distance->localAnchor);
+        jointIds.push_back(id);
+    };
+    if (domain.UsesGpu()) {
+        joints.reserve(domain.gpuJointAuthors.size());
+        jointIds.reserve(domain.gpuJointAuthors.size());
+        for (const auto &[id, joint] : domain.gpuJointAuthors)
+            append(id, joint);
+    } else if (domain.cpuControl) {
+        std::vector<uint64_t> ordered;
+        for (const auto &[id, owner] : m_cpuJointDomains)
+            if (owner == &domain)
+                ordered.push_back(id);
+        std::sort(ordered.begin(), ordered.end());
+        joints.reserve(ordered.size());
+        jointIds.reserve(ordered.size());
+        using Cpu = JoltCpuConstraints;
+        for (const auto id : ordered) {
+            const auto &joint = *domain.cpuControl->FindJoint(id);
+            const auto &binding = joint.binding;
+            auto settings = std::visit(
+                [&](const auto &value) -> InxPhyGpuSceneJointSettings {
+                    using Setting = std::decay_t<decltype(value)>;
+                    if constexpr (std::is_same_v<Setting, Cpu::Hinge>)
+                        return InxPhyGpuSceneHinge{value.axis,
+                                                   value.useLimits,
+                                                   value.minimum,
+                                                   value.maximum,
+                                                   {value.motorEnabled, value.targetAngle, value.stiffness,
+                                                    value.damping, value.maxTorque, value.jointDamping,
+                                                    value.frictionTorque, value.armature}};
+                    else if constexpr (std::is_same_v<Setting, Cpu::Slider>)
+                        return InxPhyGpuSceneSlider{value.axis, value.useLimits, value.minimum, value.maximum};
+                    else if constexpr (std::is_same_v<Setting, Cpu::Distance>)
+                        return InxPhyGpuSceneDistance{binding.connectedAnchor,
+                                                      value.autoDistance,
+                                                      value.minimum,
+                                                      value.maximum,
+                                                      value.stiffness,
+                                                      value.damping,
+                                                      binding.connectedLocalAnchor};
+                    else if constexpr (std::is_same_v<Setting, Cpu::Fixed>)
+                        return std::monostate{};
+                    else
+                        return value;
+                },
+                joint.settings);
+            append(id, {binding.ownerBody, binding.connectedBody, binding.ownerLocalAnchor, joint.enableCollision,
+                        std::move(settings)});
         }
     }
 

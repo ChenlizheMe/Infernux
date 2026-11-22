@@ -4,7 +4,6 @@
 
 #include "JoltGpuActor.h"
 #include "JoltGpuTick.h"
-#include "PhysicsConstraintOwner.h"
 #include "PhysicsECSStore.h"
 #include "PhysicsGpuPoseSource.h"
 #include "PhysicsTargetReference.h"
@@ -215,8 +214,7 @@ class JoltGpuScene final
     void StageActor(uint32_t bodyId, PreparedGpuActor actor, bool resetMotion = false);
     void SetResident(uint32_t bodyId, bool resident, bool preserveVelocity = false);
     void StageRetire(uint32_t bodyId);
-    uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
-                         JPH::GPU::JointAuthor author);
+    void CreateJoint(uint64_t id, uint32_t ownerBody, uint32_t connectedBody, JPH::GPU::JointAuthor author);
     void UpdateJoint(uint64_t id, const std::function<void(JPH::GPU::JointAuthor &)> &update,
                      uint32_t runtimeIntent = 0);
     void UpdateJoints(std::vector<JointUpdate> updates);
