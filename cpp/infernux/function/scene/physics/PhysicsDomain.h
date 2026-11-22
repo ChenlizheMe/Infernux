@@ -72,6 +72,8 @@ struct PhysicsDomain final
     void BeginInxPhyGpuFixed(ContactStreamIdentity, PhysicsFixedInputs input);
     [[nodiscard]] bool PublishInxPhyGpuFixed();
     void RetireInxPhyGpuFixed() noexcept;
+    void RequestInxPhyGpuAuthorPresentation() const;
+    void MarkInxPhyGpuTopology() noexcept;
     RuntimeWorld &owner;
     PhysicsBackend backend = PhysicsBackend::CPU;
     [[nodiscard]] bool UsesGpu() const noexcept;
@@ -181,6 +183,12 @@ struct PhysicsDomain final
     std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneRuntime> nativeRuntime;
     std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneRuntime> nativeTopology;
     bool nativeBodyLayoutDirty = false;
+    struct InxPhyGpuEdit
+    {
+        std::shared_ptr<PhysicsGpuRenderJob> renderJob;
+        bool numericalChange;
+    };
+    std::optional<InxPhyGpuEdit> nativeEdit;
     struct RenderState
     {
         using Keys = std::array<uint64_t, 3>;

@@ -45,6 +45,7 @@ class FrameWorkOwner;
 class RuntimeWorld;
 enum class PhysicsBackend : uint8_t;
 struct PhysicsDomain;
+struct PhysicsFixedInputs;
 struct PhysicsSceneJointAuthor;
 struct PhysicsGpuRenderJob;
 class PhysicsGpuRenderPoses;
@@ -826,7 +827,13 @@ class PhysicsWorld
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
     JoltGpuParticipantStages CaptureParticipants(PhysicsDomain &domain);
     bool TryBeginFixed(PhysicsDomain &domain, bool synchronous);
-    bool PrepareInxPhyGpuTopology(PhysicsDomain &domain, bool synchronous);
+    bool PrepareInxPhyGpuTopology(PhysicsDomain &domain, PhysicsFixedInputs input, uint32_t substeps, bool synchronous);
+    bool AdvanceInxPhyGpuEdit(PhysicsDomain &domain, bool synchronous);
+    bool ServiceInxPhyGpuEdits(PhysicsDomain &domain, bool synchronous);
+    void AcceptInxPhyGpuPublication(PhysicsDomain &,
+                                    std::shared_ptr<const physics::inxphygpu::InxPhyGpuFixedPublication>,
+                                    bool numericalChange, const std::shared_ptr<PhysicsGpuRenderJob> &);
+    PhysicsGpuRenderPoses &EnsureGpuRenderPoses();
     void AdvanceInxPhyGpuSource(physics::inxphygpu::InxPhyGpuSceneRuntime &runtime, bool synchronous) const;
     void FinishFixed(PhysicsDomain &domain);
     [[nodiscard]] PhysicsContactPublication::Policy CaptureContactPolicy(const PhysicsDomain &domain) const;

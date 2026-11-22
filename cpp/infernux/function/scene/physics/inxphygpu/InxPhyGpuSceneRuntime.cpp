@@ -895,8 +895,8 @@ void InxPhyGpuSceneRuntime::BeginEdits(const std::vector<PhysicsSceneBodyCommand
                                        const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
                                        PublicationConsumer consumer)
 {
-    if (commands.empty() && jointUpdates.empty())
-        throw std::invalid_argument("inxphygpu scene edit requires body or joint commands");
+    if (commands.empty() && jointUpdates.empty() && !consumer)
+        throw std::invalid_argument("inxphygpu scene edit requires commands or a publication consumer");
     Operation operation{{}, {}, {}, false, false, std::move(consumer), false, {}};
     EncodeSceneBodyCommands(commands, operation);
     using Kind = InxPhyGpuBodyCommandKind;

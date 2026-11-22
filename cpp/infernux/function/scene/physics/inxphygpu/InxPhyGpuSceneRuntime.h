@@ -96,6 +96,10 @@ struct InxPhyGpuFixedPublication
     uint32_t bodiesPerWorld = 0;
     uint32_t substeps = 1;
 
+    [[nodiscard]] bool IsFixed() const noexcept
+    {
+        return m_integrated;
+    }
     [[nodiscard]] std::optional<uint32_t> FindAcceptedWorld(ContactStreamIdentity identity) const;
     [[nodiscard]] std::optional<InxPhyGpuSceneJointReference> FindJointReference(uint32_t world,
                                                                                  uint64_t jointId) const;

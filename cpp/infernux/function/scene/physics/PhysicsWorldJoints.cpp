@@ -280,6 +280,7 @@ uint64_t PhysicsWorld::StageGpuJoint(PhysicsDomain &domain, PhysicsConstraintOwn
         throw;
     }
     domain.gpuJointLayoutDirty = true;
+    domain.RequestInxPhyGpuAuthorPresentation();
     return id;
 }
 
@@ -289,6 +290,7 @@ void PhysicsDomain::RetireGpuJoint(uint64_t id) noexcept
     if (retired) {
         PhysicsWorld::Instance().m_jointDomains.erase(id);
         gpuJointLayoutDirty = true;
+        RequestInxPhyGpuAuthorPresentation();
         retired.mapped().owner->OnPhysicsConstraintDestroyed();
     }
 }
@@ -299,6 +301,7 @@ void PhysicsDomain::MarkGpuJointEdit(uint64_t id, PhysicsSceneJointEdit edit)
     if (!mask)
         gpuJointEdits.push_back(id);
     mask |= static_cast<uint8_t>(edit);
+    RequestInxPhyGpuAuthorPresentation();
 }
 
 void PhysicsDomain::SetGpuJointPose(uint64_t id, std::optional<glm::quat> relative)
@@ -312,8 +315,11 @@ void PhysicsDomain::SetGpuJointPose(uint64_t id, std::optional<glm::quat> relati
 
 void PhysicsDomain::SetGpuJointCollision(PhysicsSceneJointAuthor &joint, bool enabled) noexcept
 {
-    gpuJointLayoutDirty |= joint.enableCollision != enabled;
-    joint.enableCollision = enabled;
+    if (joint.enableCollision != enabled) {
+        gpuJointLayoutDirty = true;
+        joint.enableCollision = enabled;
+        RequestInxPhyGpuAuthorPresentation();
+    }
 }
 
 std::vector<InxPhyGpuSceneJointUpdate> PhysicsDomain::CaptureGpuJointEdits() const
