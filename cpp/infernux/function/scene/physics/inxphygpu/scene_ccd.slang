@@ -121,6 +121,27 @@ CartesianFrame sweepFrame(uint geometry, SweepMotion motion)
                           mulQuat(motion.rotation, shape.rotation));
 }
 
+float3 pointVelocity(SweepMotion motion, float3 arm)
+{
+    return motion.linear.xyz + cross(motion.angular.xyz, arm);
+}
+
+float3 impactPoint(ShapeCastHit hit, SweepMotion first, SweepMotion second, inout float3 normal)
+{
+    const CollisionShape a = shapes[hit.identity.x], b = shapes[hit.identity.y];
+    if (a.type.x != GeomBox || b.type.x != GeomBox)
+        return hit.point.xyz;
+    const BoxManifold manifold = boxBoxContact(sweepFrame(hit.identity.x, first), a.size.xyz,
+                                               sweepFrame(hit.identity.y, second), b.size.xyz, 2.0e-5);
+    if (manifold.count == 0)
+        return hit.point.xyz;
+    normal = -manifold.normal;
+    float3 point = float3(0.0);
+    for (uint i = 0; i < manifold.count; ++i)
+        point += manifold.points[i].xyz;
+    return point / float(manifold.count);
+}
+
 ShapeCastHit earliestLaneImpact(uint world, uint lane, float duration, bool threshold)
 {
     const ModelDimensions size = ccdModel[0];
@@ -158,7 +179,9 @@ ShapeCastHit earliestLaneImpact(uint world, uint lane, float duration, bool thre
             const SweepMotion other = ccdMotion[base + b];
             const float3 relative = motion.linear.xyz - other.linear.xyz;
             const float speed = length(relative);
-            if (speed <= 1.0e-5 || (threshold && speed * duration < asfloat(settings.y) * asfloat(source.w)))
+            const float distance = speed * duration;
+            if (speed <= 1.0e-5 || (duration > 0.0 && distance <= CastContactTolerance) ||
+                (threshold && distance < asfloat(settings.y) * asfloat(source.w)))
                 continue;
             const float3 direction = relative / speed;
             const CollisionShape shape = shapes[second];
@@ -181,8 +204,25 @@ ShapeCastHit earliestLaneImpact(uint world, uint lane, float duration, bool thre
             }
             if (hit.identity.x == NoIndex)
                 continue;
-            hit.normalDistance.w /= speed;
-            hit.point.xyz += movingFrame.position.xyz + other.linear.xyz * hit.normalDistance.w;
+            const float travel = hit.normalDistance.w;
+            const float time = travel / speed;
+            hit.normalDistance.w = time;
+            hit.point.xyz += movingFrame.position.xyz + other.linear.xyz * time;
+            if (travel <= CastContactTolerance)
+            {
+                // The cast sees translation. At an existing contact use the
+                // impulse solver's feature and include angular point velocity.
+                SweepMotion firstAtHit = motion, secondAtHit = other;
+                firstAtHit.center.xyz += motion.linear.xyz * time;
+                secondAtHit.center.xyz += other.linear.xyz * time;
+                float3 normal = hit.normalDistance.xyz;
+                const float3 point = impactPoint(hit, firstAtHit, secondAtHit, normal);
+                const float3 incoming = pointVelocity(secondAtHit, point - secondAtHit.center.xyz) -
+                                        pointVelocity(firstAtHit, point - firstAtHit.center.xyz);
+                const float closing = dot(incoming, normal);
+                if (closing <= 0.0 || (duration > 0.0 && closing * duration <= CastContactTolerance))
+                    continue;
+            }
             if (castPrecedes(hit, result))
                 result = hit;
         }
@@ -207,11 +247,6 @@ SpatialMotion impulseResponse(uint row, SweepMotion motion, float3 arm, float3 a
                    projectSceneAxes(axis, body.subtree.w) / body.inertiaMass.w);
 }
 
-float3 pointVelocity(SweepMotion motion, float3 arm)
-{
-    return motion.linear.xyz + cross(motion.angular.xyz, arm);
-}
-
 float axisImpulse(uint2 bodies, float3 r1, float3 r2, float3 axis, float targetSpeed,
                   float limit, inout SweepMotion first, inout SweepMotion second)
 {
@@ -228,21 +263,6 @@ float axisImpulse(uint2 bodies, float3 r1, float3 r2, float3 axis, float targetS
     return impulse;
 }
 
-float3 impactPoint(ShapeCastHit hit, SweepMotion first, SweepMotion second)
-{
-    const CollisionShape a = shapes[hit.identity.x], b = shapes[hit.identity.y];
-    if (a.type.x != GeomBox || b.type.x != GeomBox)
-        return hit.point.xyz;
-    const BoxManifold manifold = boxBoxContact(sweepFrame(hit.identity.x, first), a.size.xyz,
-                                               sweepFrame(hit.identity.y, second), b.size.xyz, 2.0e-5);
-    if (manifold.count == 0)
-        return hit.point.xyz;
-    float3 point = float3(0.0);
-    for (uint i = 0; i < manifold.count; ++i)
-        point += manifold.points[i].xyz;
-    return point / float(manifold.count);
-}
-
 ContactReport solveImpact(uint world, ShapeCastHit hit)
 {
     const ModelDimensions size = ccdModel[0];
@@ -250,9 +270,9 @@ ContactReport solveImpact(uint world, ShapeCastHit hit)
     const uint4 geomA = ccdGeoms[hit.identity.x].indices, geomB = ccdGeoms[hit.identity.y].indices;
     const uint a = geomA.x, b = geomB.x;
     SweepMotion first = ccdMotion[base + a], second = ccdMotion[base + b];
-    const float3 point = impactPoint(hit, first, second);
+    float3 normal = hit.normalDistance.xyz;
+    const float3 point = impactPoint(hit, first, second, normal);
     const float3 r1 = point - first.center.xyz, r2 = point - second.center.xyz;
-    const float3 normal = hit.normalDistance.xyz;
     const float3 incoming = pointVelocity(second, r2) - pointVelocity(first, r1);
     const float speed = -dot(incoming, normal);
     const uint4 settings = ccdTable[0];

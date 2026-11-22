@@ -21,6 +21,7 @@ struct ConvexDistance
     ConvexSimplexVertex simplex[4];
     float3 first;
     float3 second;
+    float3 outward; // Unit direction of the closest Minkowski point.
     float distance;
     uint count;
     bool separated;
@@ -113,14 +114,17 @@ ConvexDistance gjkDistance(inout ConvexGeometry first, inout ConvexGeometry seco
             result.count = 0;
             result.first = float3(0.0);
             result.second = float3(0.0);
+            result.outward = float3(0.0);
             result.distance = ConvexFarDistance;
             result.separated = true;
             return result;
         }
 
-        weights = projectConvexSimplex(next + 1, simplex);
+        float3 closest;
+        // Retain the geometric projection for the search. The weights are for
+        // reconstructing the shape witnesses.
+        weights = projectConvexSimplex(next + 1, simplex, closest);
         result.count = 0;
-        float3 closest = float3(0.0);
         for (uint i = 0; i <= next; ++i)
         {
             if (weights[i] == 0.0)
@@ -129,7 +133,6 @@ ConvexDistance gjkDistance(inout ConvexGeometry first, inout ConvexGeometry seco
             result.simplex[index] = result.simplex[i];
             simplex[index] = simplex[i];
             weights[index] = weights[i];
-            closest += weights[index] * simplex[index];
         }
         if (result.count == 0)
             break;
@@ -148,9 +151,11 @@ ConvexDistance gjkDistance(inout ConvexGeometry first, inout ConvexGeometry seco
         result.second += weights[i] * result.simplex[i].second;
     }
     result.separated = false;
+    result.outward = float3(0.0);
     if (norm > 0.0)
     {
         const float3 unitDirection = direction / norm;
+        result.outward = unitDirection;
         const ConvexSupportPoint a = convexSupport(first, -unitDirection, model);
         const ConvexSupportPoint b = convexSupport(second, unitDirection, model);
         result.separated = dot(direction, a.point - b.point) > 0.0;
@@ -206,11 +211,8 @@ ConvexDistance convexDistancePhase(inout ConvexGeometry first, inout ConvexGeome
             {
                 if (result.distance < ConvexFarDistance)
                 {
-                    const float3 delta = result.second - result.first;
-                    const float norm2 = dot(delta, delta);
-                    const float3 normal = norm2 > 0.0 ? delta / sqrt(norm2) : float3(0.0);
-                    result.first += inflateA * normal;
-                    result.second -= inflateB * normal;
+                    result.first -= inflateA * result.outward;
+                    result.second += inflateB * result.outward;
                     result.distance -= thickness;
                 }
                 return result;

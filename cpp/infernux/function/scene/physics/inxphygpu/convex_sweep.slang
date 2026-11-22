@@ -9,6 +9,7 @@
 
 static const uint CastVertices = 101, CastFaces = 1158, CastHorizon = 512;
 static const uint CastWorkerRecords = 2 * CastVertices + CastFaces;
+static const float CastContactTolerance = 1.0e-5;
 
 struct ShapeCastHit
 {
@@ -73,7 +74,6 @@ void castConvexPair(ConvexGeometry moving, ConvexGeometry target, float3 directi
         return;
     }
     const float supportTolerance = 1.0e-6;
-    const float contactTolerance = 1.0e-5;
     float travel = 0.0;
     float3 outward = -direction;
     float3 witness = float3(0.0);
@@ -94,13 +94,14 @@ void castConvexPair(ConvexGeometry moving, ConvexGeometry target, float3 directi
                 best.point.w = 1.0;
                 return;
             }
+            const float3 delta = metric.second - metric.first;
+            const float squared = dot(delta, delta);
+            if (squared > supportTolerance * supportTolerance)
+                outward = delta * rsqrt(squared);
         }
-
-        const float3 delta = metric.first - metric.second;
-        const float squared = dot(delta, delta);
-        if (squared > supportTolerance * supportTolerance)
-            outward = delta * ((metric.distance < 0.0 ? -1.0 : 1.0) * rsqrt(squared));
-        if (metric.distance <= contactTolerance)
+        else if (any(seed.outward != 0.0))
+            outward = seed.outward;
+        if (metric.distance <= CastContactTolerance)
         {
             witness = metric.second;
             reached = true;

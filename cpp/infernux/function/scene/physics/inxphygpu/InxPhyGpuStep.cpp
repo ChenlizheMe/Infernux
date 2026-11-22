@@ -1493,7 +1493,8 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     if (detectContacts && solver && controlSlots && !model.sceneContinuousCollision.empty()) {
         const auto &rows = model.sceneContinuousCollision;
         const auto sources = std::count_if(rows.begin(), rows.end(), [](const auto &row) { return row[2] != 0; });
-        ccdImpactCapacity = std::max(32u, static_cast<uint32_t>(sources));
+        // A source can hit again after its first impulse or bounce.
+        ccdImpactCapacity = std::max(32u, 2u * static_cast<uint32_t>(sources));
     }
     const bool traceRays = rayLayout.raysPerWorld != 0;
     if (traceRays && model.dimensions.layout[0] != 0 && !collision)

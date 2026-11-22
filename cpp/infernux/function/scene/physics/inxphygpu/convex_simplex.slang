@@ -8,20 +8,22 @@ bool sameConvexSign(float first, float second)
     return (first > 0.0 && second > 0.0) || (first < 0.0 && second < 0.0);
 }
 
-float2 projectConvexSegment(float3 first, float3 second)
+float2 projectConvexSegment(float3 first, float3 second, out float3 point)
 {
     const float3 edge = second - first;
     const float edge2 = dot(edge, edge);
-    if (edge2 == 0.0)
-        return float2(0.0, 1.0);
-    const float3 point = second - edge * (dot(second, edge) / edge2);
-    uint axis = abs(edge.y) >= abs(edge.x) ? 1 : 0;
-    axis = abs(edge.z) >= abs(edge[axis]) ? 2 : axis;
-    const float span = -edge[axis];
-    const float2 area = float2(point[axis] - second[axis], first[axis] - point[axis]);
-    if (sameConvexSign(span, area.x) && sameConvexSign(span, area.y))
-        return area / span;
+    if (edge2 > 0.0)
+    {
+        const float t = -dot(first, edge) / edge2;
+        if (t > 0.0 && t < 1.0)
+        {
+            // Preserve the normal projection on long edges near the origin.
+            point = cross(edge, cross(first, edge)) / edge2;
+            return float2(1.0 - t, t);
+        }
+    }
     // The newest vertex is the support point that can reduce the distance.
+    point = second;
     return float2(0.0, 1.0);
 }
 
@@ -76,14 +78,13 @@ bool convexTriangleCoordinates(float3 first, float3 second, float3 third, float3
     return true;
 }
 
-float3 projectConvexTriangle(float3 vertices[3])
+float3 projectConvexTriangle(float3 vertices[3], out float3 projection)
 {
-    float3 projection;
     if (!projectConvexPlane(vertices[0], vertices[1], vertices[2], projection))
-        return float3(projectConvexSegment(vertices[0], vertices[1]), 0.0);
+        return float3(projectConvexSegment(vertices[0], vertices[1], projection), 0.0);
     float3 projected;
     if (!convexTriangleCoordinates(vertices[0], vertices[1], vertices[2], projection, projected))
-        return float3(projectConvexSegment(vertices[0], vertices[1]), 0.0);
+        return float3(projectConvexSegment(vertices[0], vertices[1], projection), 0.0);
     const bool3 interior = projected > float3(0.0);
     if (all(interior))
         return projected;
@@ -96,12 +97,13 @@ float3 projectConvexTriangle(float3 vertices[3])
             continue;
         const uint first = excluded == 0 ? 1 : 0;
         const uint second = excluded <= 1 ? 2 : 1;
-        const float2 edgeWeights = projectConvexSegment(vertices[first], vertices[second]);
-        const float3 witness = edgeWeights.x * vertices[first] + edgeWeights.y * vertices[second];
+        float3 witness;
+        const float2 edgeWeights = projectConvexSegment(vertices[first], vertices[second], witness);
         const float distance2 = dot(witness, witness);
         if (distance2 < bestDistance)
         {
             bestDistance = distance2;
+            projection = witness;
             weights = float3(0.0);
             weights[first] = edgeWeights.x;
             weights[second] = edgeWeights.y;
@@ -110,7 +112,13 @@ float3 projectConvexTriangle(float3 vertices[3])
     return weights;
 }
 
-float4 projectConvexTetrahedron(float3 vertices[4])
+float3 projectConvexTriangle(float3 vertices[3])
+{
+    float3 projection;
+    return projectConvexTriangle(vertices, projection);
+}
+
+float4 projectConvexTetrahedron(float3 vertices[4], out float3 projection)
 {
     const float3 a = vertices[0];
     const float3 b = vertices[1];
@@ -121,6 +129,7 @@ float4 projectConvexTetrahedron(float3 vertices[4])
     const float volume = cofactors.x + cofactors.y + cofactors.z + cofactors.w;
     const bool4 interior = bool4(sameConvexSign(volume, cofactors.x), sameConvexSign(volume, cofactors.y),
                                  sameConvexSign(volume, cofactors.z), sameConvexSign(volume, cofactors.w));
+    projection = float3(0.0);
     if (all(interior))
         return cofactors / volume;
 
@@ -132,12 +141,13 @@ float4 projectConvexTetrahedron(float3 vertices[4])
             continue;
         const uint3 indices = uint3(excluded == 0 ? 1 : 0, excluded <= 1 ? 2 : 1, excluded <= 2 ? 3 : 2);
         float3 face[3] = {vertices[indices.x], vertices[indices.y], vertices[indices.z]};
-        const float3 coord = projectConvexTriangle(face);
-        const float3 witness = coord.x * face[0] + coord.y * face[1] + coord.z * face[2];
+        float3 witness;
+        const float3 coord = projectConvexTriangle(face, witness);
         const float distance2 = dot(witness, witness);
         if (distance2 < bestDistance)
         {
             bestDistance = distance2;
+            projection = witness;
             weights = float4(0.0);
             weights[indices.x] = coord.x;
             weights[indices.y] = coord.y;
@@ -147,18 +157,19 @@ float4 projectConvexTetrahedron(float3 vertices[4])
     return weights;
 }
 
-float4 projectConvexSimplex(uint count, float3 vertices[4])
+float4 projectConvexSimplex(uint count, float3 vertices[4], out float3 projection)
 {
     switch (count)
     {
     case 2:
-        return float4(projectConvexSegment(vertices[0], vertices[1]), 0.0, 0.0);
+        return float4(projectConvexSegment(vertices[0], vertices[1], projection), 0.0, 0.0);
     case 3:
         float3 face[3] = {vertices[0], vertices[1], vertices[2]};
-        return float4(projectConvexTriangle(face), 0.0);
+        return float4(projectConvexTriangle(face, projection), 0.0);
     case 4:
-        return projectConvexTetrahedron(vertices);
+        return projectConvexTetrahedron(vertices, projection);
     default:
+        projection = vertices[0];
         return float4(1.0, 0.0, 0.0, 0.0);
     }
 }
